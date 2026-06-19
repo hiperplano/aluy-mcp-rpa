@@ -13,9 +13,14 @@ from typing import Optional
 class DesktopBackend:
     """Low-level desktop actions (mouse, keyboard, screen) using Xlib + XTest."""
 
-    def __init__(self):
+    def __init__(self, *, keyboard: str = "xsendevent"):
         display = os.environ.get("DISPLAY", ":10")
         os.environ["DISPLAY"] = display
+
+        # Método de teclado detectado: 'xtest' (universal, cobre Wine — onde o
+        # servidor X aceita injeção de tecla) ou 'xsendevent' (xrdp, que descarta
+        # XTest-tecla; funciona em Athena/GTK mas não em Wine).
+        self._keyboard = keyboard
 
         # Xlib
         from Xlib import display as xdisplay
@@ -281,10 +286,26 @@ class DesktopBackend:
             if not res:
                 continue
             kc, state = res
-            mods = (self._modcode("Shift_L"),) if (state & X.ShiftMask) else ()
-            mods = tuple(m for m in mods if m)
-            self._send_key(kc, state, mods=mods)
+            shift = bool(state & X.ShiftMask)
+            self._emit_key(kc, shift)
             time.sleep(0.02)
+
+    def _emit_key(self, kc: int, shift: bool):
+        """Emite UMA tecla pelo método detectado (XTest universal, ou XSendEvent
+        no xrdp). Aplica Shift de verdade quando preciso."""
+        from Xlib import X
+        if self._keyboard == "xtest":
+            sk = self._modcode("Shift_L") if shift else 0
+            if sk:
+                self._fake_key(sk, True)
+            self._fake_key(kc, True)
+            self._fake_key(kc, False)
+            if sk:
+                self._fake_key(sk, False)
+        else:
+            mods = (self._modcode("Shift_L"),) if shift else ()
+            mods = tuple(m for m in mods if m)
+            self._send_key(kc, (X.ShiftMask if shift else 0), mods=mods)
 
     def press_key(self, key: str):
         """Press a key or combo (e.g., 'ctrl+c', 'alt+F4', 'Return', 'Escape')."""
@@ -333,7 +354,15 @@ class DesktopBackend:
             print(f"[rpa] Aviso: tecla '{key}' não mapeada", file=sys.stderr)
             return
 
-        self._send_key(kc, state, mods=tuple(mod_codes))
+        if self._keyboard == "xtest":
+            for mc in mod_codes:
+                self._fake_key(mc, True)
+            self._fake_key(kc, True)
+            self._fake_key(kc, False)
+            for mc in reversed(mod_codes):
+                self._fake_key(mc, False)
+        else:
+            self._send_key(kc, state, mods=tuple(mod_codes))
 
     # ── Screenshot ─────────────────────────────────────────
 
