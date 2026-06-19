@@ -82,6 +82,8 @@ def _has_wine() -> bool:
 
 
 def detect_capabilities(display: str = None) -> dict:
+    import platform
+    os_name = platform.system()  # 'Linux' | 'Windows' | 'Darwin'
     display = display or os.environ.get("DISPLAY", ":0")
     gpu = _has_gpu()
     avail_mb, swap_mb = _mem_info()
@@ -97,6 +99,7 @@ def detect_capabilities(display: str = None) -> dict:
         a11y = False
 
     caps = {
+        "os": os_name,
         "gpu": gpu,
         "mem_available_mb": avail_mb,
         "swap_mb": swap_mb,
@@ -120,6 +123,6 @@ def detect_capabilities(display: str = None) -> dict:
 
 
 def summary(caps: dict) -> str:
-    return ("[rpa] capacidades: gpu={gpu} mem={mem_available_mb}MB swap={swap_mb}MB "
+    return ("[rpa] capacidades: os={os} gpu={gpu} mem={mem_available_mb}MB swap={swap_mb}MB "
             "ocr_canvas={ocr_canvas} vlm={vlm_allowed} teclado={keyboard} a11y={a11y} "
             "x_ok={x_ok} wine={wine} (display={display}, xrdp={xrdp})").format(**caps)

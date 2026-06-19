@@ -1,8 +1,12 @@
 mcp>=1.0.0
-python-Xlib>=0.33
+python-Xlib>=0.33      # ação no Linux/X11 (XTest/XSendEvent/EWMH)
 Pillow>=10.0
 opencv-python-headless>=4.8
 numpy>=1.24
-mss>=9.0
+mss>=9.0               # screenshot — cross-OS (Linux/Windows/macOS)
 easyocr>=1.7
 pyscreeze>=0.1
+
+# Backend de ação PORTÁVEL (Windows/macOS, EST-1147) — instale SÓ no Win/Mac
+# (no Linux usa-se o backend Xlib; pygetwindow não suporta Linux):
+#   pip install pyautogui pygetwindow
