@@ -138,7 +138,45 @@ class VisionBackend:
         if _HAS_EASYOCR:
             os.environ.setdefault("EASYOCR_VERBOSE", "0")
             self._ocr_reader = easyocr.Reader(["pt", "en"], gpu=self._ocr_gpu, verbose=False)
+            self._calibrate_canvas()
         self._ocr_loaded = True
+
+    # EST-1143: garante OCR < orçamento (nenhuma chamada estoura os 60s do MCP).
+    OCR_BUDGET_S = 40.0   # margem confortável abaixo dos 60s
+    OCR_MIN_CANVAS = 640  # piso de qualidade
+
+    def _calibrate_canvas(self):
+        """Mede o tempo de UMA passada de OCR no canvas configurado, num quadro
+        denso do tamanho de tela; se passar do orçamento, ENCOLHE o canvas
+        (tempo ∝ canvas²) para garantir que a chamada real caiba em < OCR_BUDGET_S.
+        Roda uma vez (no warm-up, em background)."""
+        try:
+            import numpy as np, time as _t
+            if self._ocr_gpu:
+                return  # GPU: rápido, não precisa capar
+            # quadro denso de teste (texto repetido), ~tamanho de tela cheia
+            big = Image.new("RGB", (1920, 1080), "white")
+            from PIL import ImageDraw
+            dr = ImageDraw.Draw(big)
+            line = "Buy Sell 12345 OK Cancel Accept EURUSD 1.2345 menu file edit  " * 3
+            for y in range(20, 1060, 26):
+                dr.text((10, y), line, fill="black")
+            t0 = _t.time()
+            self._ocr_reader.readtext(np.array(big), detail=0,
+                                      canvas_size=self._ocr_canvas, mag_ratio=1.0)
+            dt = _t.time() - t0
+            if dt > self.OCR_BUDGET_S * 0.7:
+                import math
+                factor = math.sqrt((self.OCR_BUDGET_S * 0.7) / dt)
+                new_c = max(self.OCR_MIN_CANVAS, int(self._ocr_canvas * factor))
+                print(f"[rpa] OCR calibração: {dt:.0f}s no canvas {self._ocr_canvas} "
+                      f"> orçamento → canvas {new_c}", file=sys.stderr)
+                self._ocr_canvas = new_c
+            else:
+                print(f"[rpa] OCR calibração: {dt:.0f}s (canvas {self._ocr_canvas}, ok)",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"[rpa] OCR calibração falhou (não-fatal): {e}", file=sys.stderr)
 
     def ocr(self, image_path: str, region: Optional[dict] = None) -> str:
         """Extract text from image using EasyOCR (primary) or Tesseract (fallback)."""

@@ -25,6 +25,12 @@ from .backends.vision import VisionBackend
 from .backends.vlm import VlmBackend
 
 
+def _in_region(loc: dict, region: dict) -> bool:
+    """True se o ponto (loc x/y) está dentro de region {x,y,width,height}."""
+    return (region["x"] <= loc["x"] <= region["x"] + region["width"] and
+            region["y"] <= loc["y"] <= region["y"] + region["height"])
+
+
 @dataclass
 class ActionResult:
     """Result of an RPA action with verification."""
@@ -325,6 +331,26 @@ class RpaEngine:
         The agent can assert the outcome separately (OCR/read of expected state).
         """
         region = self._region(region)
+
+        # a11y-first (EST-1146): se o app expõe a árvore de acessibilidade, achar
+        # o elemento por nome é exato e INSTANTÂNEO (sem OCR). Só vale dentro do
+        # palco (senão um botão de mesmo nome em outro app seria clicado); apps
+        # sem a11y (Wine/canvas) retornam None e o caminho CV (OCR) assume.
+        if region is not None:
+            try:
+                from .a11y import find_text as _a11y_find
+                aloc = _a11y_find(text)
+                if aloc and _in_region(aloc, region):
+                    self.desktop.mouse_click(aloc["x"], aloc["y"])
+                    time.sleep(0.25)
+                    return ActionResult(
+                        success=True, action=f"click_text_{text[:20]}",
+                        details={"text": text, "matched_text": aloc["name"],
+                                 "clicked_at": {"x": aloc["x"], "y": aloc["y"]},
+                                 "via": "a11y", "role": aloc.get("role")})
+            except Exception:
+                pass
+
         before = self._screenshot("ct_before")
         loc = self.vision.find_text(before, text, region=region)
         healed = False

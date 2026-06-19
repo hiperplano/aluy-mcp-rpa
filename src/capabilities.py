@@ -70,12 +70,20 @@ def detect_capabilities(display: str = None) -> dict:
     avail_mb, swap_mb = _mem_info()
     xrdp = _display_is_xrdp(display)
 
+    # a11y (AT-SPI) disponível? — caminho rápido/preciso opcional (EST-1146).
+    try:
+        from .a11y import available as _a11y_available
+        a11y = _a11y_available()
+    except Exception:
+        a11y = False
+
     caps = {
         "gpu": gpu,
         "mem_available_mb": avail_mb,
         "swap_mb": swap_mb,
         "display": display,
         "xrdp": xrdp,
+        "a11y": a11y,
         # EasyOCR: usa GPU se houver; canvas maior em GPU, capado em CPU.
         "ocr_gpu": gpu,
         "ocr_canvas": 2560 if gpu else 1280,
@@ -92,5 +100,5 @@ def detect_capabilities(display: str = None) -> dict:
 
 def summary(caps: dict) -> str:
     return ("[rpa] capacidades: gpu={gpu} mem={mem_available_mb}MB swap={swap_mb}MB "
-            "ocr_canvas={ocr_canvas} vlm={vlm_allowed} teclado={keyboard} "
+            "ocr_canvas={ocr_canvas} vlm={vlm_allowed} teclado={keyboard} a11y={a11y} "
             "(display={display}, xrdp={xrdp})").format(**caps)
