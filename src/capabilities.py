@@ -64,11 +64,30 @@ def _display_is_xrdp(display: str) -> bool:
     return False                   # desconhecido: assume X normal (XTest)
 
 
+def _x_reachable(display: str) -> bool:
+    """O servidor X do `display` aceita conexão? (sem ele o motor não roda)."""
+    try:
+        from Xlib import display as _xd
+        d = _xd.Display(display)
+        d.close()
+        return True
+    except Exception:
+        return False
+
+
+def _has_wine() -> bool:
+    """Wine instalado? (necessário só p/ automatizar apps Windows, ex.: MetaTrader)."""
+    import shutil
+    return shutil.which("wine") is not None or shutil.which("wine64") is not None
+
+
 def detect_capabilities(display: str = None) -> dict:
     display = display or os.environ.get("DISPLAY", ":0")
     gpu = _has_gpu()
     avail_mb, swap_mb = _mem_info()
     xrdp = _display_is_xrdp(display)
+    x_ok = _x_reachable(display)
+    wine = _has_wine()
 
     # a11y (AT-SPI) disponível? — caminho rápido/preciso opcional (EST-1146).
     try:
@@ -84,6 +103,8 @@ def detect_capabilities(display: str = None) -> dict:
         "display": display,
         "xrdp": xrdp,
         "a11y": a11y,
+        "x_ok": x_ok,
+        "wine": wine,
         # EasyOCR: usa GPU se houver; canvas maior em GPU, capado em CPU.
         "ocr_gpu": gpu,
         "ocr_canvas": 2560 if gpu else 1280,
@@ -101,4 +122,4 @@ def detect_capabilities(display: str = None) -> dict:
 def summary(caps: dict) -> str:
     return ("[rpa] capacidades: gpu={gpu} mem={mem_available_mb}MB swap={swap_mb}MB "
             "ocr_canvas={ocr_canvas} vlm={vlm_allowed} teclado={keyboard} a11y={a11y} "
-            "(display={display}, xrdp={xrdp})").format(**caps)
+            "x_ok={x_ok} wine={wine} (display={display}, xrdp={xrdp})").format(**caps)

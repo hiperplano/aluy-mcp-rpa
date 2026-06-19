@@ -106,6 +106,18 @@ sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab   # persiste no reboot
 ```
 
+### Pré-requisitos de SO que o server DETECTA e AVISA no startup (EST-1145)
+
+O motor de detecção (`capabilities`) sonda e loga no boot — **não conserta** (são de sistema):
+
+| Pré-requisito | Sem ele | Como prover |
+|---|---|---|
+| **Servidor X** (`DISPLAY`) | ERRO — o motor não opera | xrdp/`:10`, ou `Xvfb :20 -screen 0 1280x1024x24` |
+| **Swap** (memória) | OOM mata a sessão | ver bloco acima |
+| **Wine** | apps **Windows** (ex.: MetaTrader) não abrem; nativos ok | `sudo apt install wine wine64` |
+
+O log de boot mostra tudo: `[rpa] capacidades: ... x_ok=… wine=… …`.
+
 ## Registro como MCP server
 
 ```bash
