@@ -18,9 +18,15 @@ def detect_backends(caps: dict = None):
             from ..capabilities import detect_capabilities, summary
             caps = detect_capabilities()
             print(summary(caps), file=sys.stderr)
+            if not caps.get("x_ok", True):
+                print(f"[rpa] ERRO: servidor X não acessível em DISPLAY={caps.get('display')} "
+                      "— abra um X (xrdp/Xvfb) antes. Sem X o motor não opera.", file=sys.stderr)
             if caps.get("warn_no_swap"):
                 print("[rpa] AVISO: memória baixa e SEM swap — EasyOCR/VLM podem "
                       "causar OOM. Configure swap (ver README).", file=sys.stderr)
+            if not caps.get("wine", True):
+                print("[rpa] INFO: Wine não instalado — apps Windows (ex.: MetaTrader) "
+                      "não abrirão; apps nativos do Linux funcionam normalmente.", file=sys.stderr)
         except Exception as e:
             print(f"[rpa] detecção de capacidades falhou (defaults): {e}", file=sys.stderr)
             caps = {}
