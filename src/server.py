@@ -35,6 +35,9 @@ from pathlib import Path
 if not os.environ.get("DISPLAY"):
     os.environ["DISPLAY"] = ":10"
 
+# Pula warm-up do EasyOCR (evita timeout de 120s+ no handshake MCP)
+os.environ.setdefault("RPA_SKIP_OCR_WARMUP", "1")
+
 try:
     from mcp.server import Server, NotificationOptions
     from mcp.server.stdio import stdio_server
@@ -83,7 +86,12 @@ def get_engine() -> RpaEngine:
 
 def _warm_ocr():
     """Pré-carrega o EasyOCR em background no boot, para a PRIMEIRA chamada de
-    tool não pagar a carga fria (~30-60s) e estourar o timeout de 60s do MCP."""
+    tool não pagar a carga fria (~30-60s) e estourar o timeout de 60s do MCP.
+    Respeita RPA_SKIP_OCR_WARMUP=1 para pular (útil quando o EasyOCR demora
+    demais e o framework mata o server antes do handshake)."""
+    if os.environ.get("RPA_SKIP_OCR_WARMUP") == "1":
+        print("[rpa] EasyOCR warm-up pulado (RPA_SKIP_OCR_WARMUP=1)", file=sys.stderr)
+        return
     try:
         get_engine().vision._ensure_ocr()
         print("[rpa] EasyOCR pré-aquecido", file=sys.stderr)

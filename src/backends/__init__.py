@@ -31,11 +31,17 @@ def detect_backends(caps: dict = None):
             print(f"[rpa] detecção de capacidades falhou (defaults): {e}", file=sys.stderr)
             caps = {}
 
-    # Desktop (método de teclado detectado)
+    # Ação: backend por OS (EST-1147). Linux → Xlib (proveado, XTest/XSendEvent);
+    # Windows/macOS → PortableBackend (pyautogui+pygetwindow, input nativo do OS).
+    os_name = caps.get("os", "Linux")
     try:
-        desktop = DesktopBackend(keyboard=caps.get("keyboard", "xsendevent"))
+        if os_name in ("Windows", "Darwin"):
+            from .portable import PortableBackend
+            desktop = PortableBackend()
+        else:
+            desktop = DesktopBackend(keyboard=caps.get("keyboard", "xsendevent"))
     except Exception as e:
-        errors.append(f"desktop: {e}")
+        errors.append(f"desktop ({os_name}): {e}")
         desktop = None
 
     # Vision (GPU + canvas de OCR detectados)

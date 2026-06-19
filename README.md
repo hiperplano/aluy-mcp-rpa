@@ -116,7 +116,18 @@ O motor de detecção (`capabilities`) sonda e loga no boot — **não conserta*
 | **Swap** (memória) | OOM mata a sessão | ver bloco acima |
 | **Wine** | apps **Windows** (ex.: MetaTrader) não abrem; nativos ok | `sudo apt install wine wine64` |
 
-O log de boot mostra tudo: `[rpa] capacidades: ... x_ok=… wine=… …`.
+O log de boot mostra tudo: `[rpa] capacidades: os=… ... x_ok=… wine=… …`.
+
+### Sistema operacional (Linux · Windows · macOS — EST-1147)
+
+A detecção escolhe o **backend de ação** pelo OS — o resto (visão/OCR/a11y/engine/MCP) é o mesmo:
+
+| OS | Backend de ação | Estado |
+|---|---|---|
+| **Linux/X11** | Xlib + XTest/XSendEvent + EWMH (`DesktopBackend`) | ✅ provado (default) |
+| **Windows / macOS** | pyautogui + pygetwindow + mss (`PortableBackend`) | ⚠️ implementado; **input validado** (pyautogui em Xvfb), **janelas (pygetwindow) e run completo pendentes de máquina Win/Mac** |
+
+Screenshot é via **mss** (cross-OS) nos dois. No Win/Mac, `pip install pyautogui pygetwindow` e rode normalmente — o motor detecta o OS e usa o backend portável.
 
 ## Registro como MCP server
 

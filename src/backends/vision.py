@@ -136,7 +136,11 @@ class VisionBackend:
             return
         if _HAS_EASYOCR:
             os.environ.setdefault("EASYOCR_VERBOSE", "0")
-            import easyocr  # lazy: puxa torch só aqui (na thread de warm-up)
+            # Permite pular o warm-up via env var (evita timeout no handshake MCP)
+            if os.environ.get("RPA_SKIP_OCR_WARMUP") == "1":
+                self._ocr_loaded = True
+                return
+            import easyocr  # lazy: puxa torch só aqui
             self._ocr_reader = easyocr.Reader(["pt", "en"], gpu=self._ocr_gpu, verbose=False)
             self._calibrate_canvas()
         self._ocr_loaded = True
