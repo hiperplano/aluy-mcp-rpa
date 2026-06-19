@@ -22,13 +22,12 @@ try:
 except ImportError:
     pass
 
-_HAS_EASYOCR = False
+import importlib.util
+# NÃO importar easyocr aqui: ele puxa o torch (~vários s), e isso atrasaria o
+# IMPORT do server e o handshake MCP (limite de ~6s). Só checamos se está
+# instalado; o import real acontece em _ensure_ocr (na thread de warm-up).
+_HAS_EASYOCR = importlib.util.find_spec("easyocr") is not None
 _easyocr_reader = None
-try:
-    import easyocr
-    _HAS_EASYOCR = True
-except ImportError:
-    pass
 
 
 class VisionBackend:
@@ -137,6 +136,7 @@ class VisionBackend:
             return
         if _HAS_EASYOCR:
             os.environ.setdefault("EASYOCR_VERBOSE", "0")
+            import easyocr  # lazy: puxa torch só aqui (na thread de warm-up)
             self._ocr_reader = easyocr.Reader(["pt", "en"], gpu=self._ocr_gpu, verbose=False)
             self._calibrate_canvas()
         self._ocr_loaded = True
