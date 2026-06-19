@@ -174,39 +174,161 @@ class VisionBackend:
         except Exception as e:
             return f"Erro OCR: {e}"
 
+    def ocr_tokens(self, image_path: str, region: Optional[dict] = None,
+                   *, min_conf: float = 0.3) -> list:
+        """Return ALL text tokens visible (scoped to region), each with its absolute
+        click point: [{text, x, y, confidence}]. This is how a TEXT-only agent
+        'sees' the screen — it can then click_text/click_at by what's listed."""
+        if not _HAS_EASYOCR:
+            return []
+        import numpy as np
+        self._ensure_ocr()
+        img = Image.open(image_path).convert("RGB")
+        ox, oy = 0, 0
+        if region:
+            ox = region.get("x", 0); oy = region.get("y", 0)
+            w = region.get("width", img.width - ox); h = region.get("height", img.height - oy)
+            img = img.crop((ox, oy, ox + w, oy + h))
+        scale = 1
+        if max(img.width, img.height) < 1100:
+            scale = max(2, min(4, 1100 // max(img.width, img.height, 1)))
+            if scale > 1:
+                img = img.resize((img.width * scale, img.height * scale), Image.LANCZOS)
+        out = []
+        # canvas_size capa a resolução que o EasyOCR processa: telas grandes
+        # (ex.: MetaTrader 1920px) ficam rápidas (<60s, senão o MCP reinicia o
+        # server). As coordenadas voltam no espaço da imagem original.
+        for bbox, txt, conf in self._ocr_reader.readtext(
+                np.array(img), detail=1, paragraph=False, text_threshold=0.4,
+                low_text=0.3, canvas_size=1280, mag_ratio=1.0):
+            if conf < min_conf or not txt.strip():
+                continue
+            cx = int((bbox[0][0] + bbox[2][0]) / 2 / scale) + ox
+            cy = int((bbox[0][1] + bbox[2][1]) / 2 / scale) + oy
+            out.append({"text": txt.strip(), "x": cx, "y": cy, "confidence": round(float(conf), 2)})
+        return out
+
     def find_text(self, image_path: str, text: str,
-                  region: Optional[dict] = None) -> Optional[dict]:
-        """Find text position via OCR. Returns {x, y, text, confidence} or None."""
+                  region: Optional[dict] = None,
+                  *, min_conf: float = 0.3) -> Optional[dict]:
+        """Find text position via OCR. Returns {x, y, text, confidence} or None.
+
+        Upscales the search area before OCR so small/single-glyph controls
+        (digits, short labels) are legible — EasyOCR is blind to them at native
+        size in a busy/small window. Prefers an exact token match over substring
+        (so '7' does not match '127'), then ranks by confidence.
+        """
         if not _HAS_EASYOCR:
             return None
 
         self._ensure_ocr()
-        img = Image.open(image_path)
+        img = Image.open(image_path).convert("RGB")
+        ox, oy = 0, 0
         if region:
-            x = region.get("x", 0)
-            y = region.get("y", 0)
-            w = region.get("width", img.width - x)
-            h = region.get("height", img.height - y)
-            img = img.crop((x, y, x + w, y + h))
+            ox = region.get("x", 0)
+            oy = region.get("y", 0)
+            w = region.get("width", img.width - ox)
+            h = region.get("height", img.height - oy)
+            img = img.crop((ox, oy, ox + w, oy + h))
 
+        # Upscale so the smallest readable glyph clears EasyOCR's floor.
+        scale = 1
+        if max(img.width, img.height) < 1100:
+            scale = max(2, min(4, 1100 // max(img.width, img.height, 1)))
+            if scale > 1:
+                img = img.resize((img.width * scale, img.height * scale), Image.LANCZOS)
+
+        import numpy as _np
+        results = self._ocr_reader.readtext(
+            _np.array(img), detail=1, paragraph=False,
+            text_threshold=0.4, low_text=0.3, canvas_size=1280, mag_ratio=1.0,
+        )
+
+        text_lower = text.strip().lower()
+        exact, partial = None, None
+        for (bbox, txt, conf) in results:
+            if conf < min_conf:
+                continue
+            t = txt.strip().lower()
+            cx = int((bbox[0][0] + bbox[2][0]) / 2 / scale) + ox
+            cy = int((bbox[0][1] + bbox[2][1]) / 2 / scale) + oy
+            hit = {"x": cx, "y": cy, "text": txt.strip(), "confidence": float(conf)}
+            if t == text_lower:
+                if exact is None or conf > exact["confidence"]:
+                    exact = hit
+            elif text_lower in t:
+                if partial is None or conf > partial["confidence"]:
+                    partial = hit
+        return exact or partial
+
+    def region_changed(self, before_path: str, after_path: str,
+                       region: Optional[dict] = None, *, thresh: float = 0.0015) -> bool:
+        """True if a meaningful fraction of pixels changed inside `region`.
+
+        Used as a real post-condition: a click that did nothing leaves the stage
+        unchanged. Ignores tiny noise (cursor blink) via the threshold.
+        """
+        try:
+            import numpy as np
+            a = Image.open(before_path).convert("L")
+            b = Image.open(after_path).convert("L")
+            if region:
+                x = region.get("x", 0); y = region.get("y", 0)
+                w = region.get("width", a.width - x); h = region.get("height", a.height - y)
+                box = (x, y, x + w, y + h)
+                a = a.crop(box); b = b.crop(box)
+            if a.size != b.size:
+                return True
+            aa = np.asarray(a, dtype=np.int16); bb = np.asarray(b, dtype=np.int16)
+            diff = np.abs(aa - bb) > 25
+            return float(diff.mean()) > thresh
+        except Exception as e:
+            print(f"[rpa] region_changed falhou: {e}", file=sys.stderr)
+            return True  # fail-open: don't block on a verify error
+
+    def ground(self, vlm, image_path: str, description: str,
+               region: Optional[dict] = None) -> Optional[dict]:
+        """Locate an element by natural-language description via a VLM.
+
+        Fallback for glyph/icon controls that OCR can't read. Returns absolute
+        {x, y} (screen coords) or None. The VLM answers in cropped-image pixels;
+        we scale back and add the region offset.
+        """
+        import re
+        import numpy as np
+        img = Image.open(image_path).convert("RGB")
+        ox, oy = 0, 0
+        if region:
+            ox = region.get("x", 0); oy = region.get("y", 0)
+            w = region.get("width", img.width - ox); h = region.get("height", img.height - oy)
+            img = img.crop((ox, oy, ox + w, oy + h))
+        scale = 2 if max(img.width, img.height) < 700 else 1
+        if scale > 1:
+            img = img.resize((img.width * scale, img.height * scale), Image.LANCZOS)
         tmp = tempfile.mktemp(suffix=".png")
         img.save(tmp)
-        results = self._ocr_reader.readtext(tmp)
-        os.unlink(tmp)
-
-        text_lower = text.lower()
-        best = None
-        for (bbox, txt, conf) in results:
-            if text_lower in txt.lower():
-                # bbox = [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                cx = int((bbox[0][0] + bbox[2][0]) / 2)
-                cy = int((bbox[0][1] + bbox[2][1]) / 2)
-                if region:
-                    cx += region.get("x", 0)
-                    cy += region.get("y", 0)
-                if best is None or conf > best["confidence"]:
-                    best = {"x": cx, "y": cy, "text": txt, "confidence": conf}
-        return best
+        prompt = (
+            f"Esta imagem é uma interface gráfica de {img.width}x{img.height} pixels. "
+            f"Devolva APENAS o centro do elemento '{description}' como JSON "
+            f'{{"x": <int>, "y": <int>}} em pixels da imagem. Sem texto extra.'
+        )
+        try:
+            ans = vlm.query(tmp, prompt)
+        except Exception as e:
+            print(f"[rpa] ground/vlm falhou: {e}", file=sys.stderr)
+            ans = ""
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+        nums = re.findall(r"-?\d+", ans or "")
+        if len(nums) < 2:
+            return None
+        px, py = int(nums[0]), int(nums[1])
+        ax = int(px / scale) + ox
+        ay = int(py / scale) + oy
+        return {"x": ax, "y": ay, "raw": (ans or "").strip()[:80]}
 
     # ── Diff ───────────────────────────────────────────────
 

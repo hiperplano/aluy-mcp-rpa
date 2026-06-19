@@ -32,6 +32,9 @@ class DesktopBackend:
         from mss import mss
         self._mss = mss()
 
+        # Window we last gave focus to (XSendEvent target for the keyboard).
+        self._focused_win = None
+
         # Build keycode cache for common keys
         self._keycode_cache = {}
         self._build_keymap()
@@ -126,10 +129,22 @@ class DesktopBackend:
         self._display.sync()
 
     def _fake_motion(self, x: int, y: int):
-        """Move mouse via XTest."""
-        # XTest fake_input(display, MotionNotify=6, detail=0 (absolute), x, y)
-        self._xtest(self._display, 6, 0, x, y)
+        """Warp the pointer to absolute (x, y).
+
+        NOTE: fake_input's signature is (display, event_type, detail, time, root,
+        x, y) — passing x,y positionally after detail lands them in `time`/`root`,
+        so the pointer never moves and clicks fire at the stale cursor position.
+        x and y MUST be keyword args. We also warp_pointer as a belt-and-braces
+        fallback so the cursor is truly at the target before the button event.
+        """
+        from Xlib import X
+        self._xtest(self._display, X.MotionNotify, x=int(x), y=int(y), root=self._root)
         self._display.sync()
+        try:
+            self._root.warp_pointer(int(x), int(y))
+            self._display.sync()
+        except Exception:
+            pass
 
     # ── Mouse ──────────────────────────────────────────────
 
@@ -179,15 +194,97 @@ class DesktopBackend:
 
     # ── Keyboard ───────────────────────────────────────────
 
+    # XTest key injection is silently dropped by this Xorg/xrdp server (mouse
+    # works, keys don't), even with focus correct. XSendEvent IS delivered, so
+    # the keyboard goes through XSendEvent to the focused window instead.
+
+    def _key_target(self):
+        """Window to receive synthetic key events: the live input focus, falling
+        back to the last window we activated, then the root."""
+        from Xlib import X
+        try:
+            f = self._display.get_input_focus().focus
+            if f not in (X.NONE, X.PointerRoot) and not isinstance(f, int):
+                return f
+        except Exception:
+            pass
+        return self._focused_win or self._root
+
+    def _xkey(self, w, keycode, press, state):
+        from Xlib import X
+        from Xlib.protocol import event as xe
+        klass = xe.KeyPress if press else xe.KeyRelease
+        ev = klass(time=X.CurrentTime, root=self._root, window=w, same_screen=1,
+                   child=X.NONE, root_x=0, root_y=0, event_x=0, event_y=0,
+                   state=state, detail=keycode)
+        try:
+            w.send_event(ev, propagate=True)
+        except Exception:
+            pass
+
+    def _send_key(self, keycode: int, state: int = 0, mods=()):
+        """Send KeyPress+KeyRelease to the focused window via XSendEvent.
+
+        `state` is the modifier mask; `mods` are modifier KEYCODES to actually
+        hold down around the key — some toolkits (Athena/xcalc) re-derive the
+        modifier from real Shift/Ctrl key events and ignore the `state` field.
+        """
+        w = self._key_target()
+        for mkc in mods:
+            self._xkey(w, mkc, True, state)
+        self._xkey(w, keycode, True, state)
+        self._xkey(w, keycode, False, state)
+        for mkc in reversed(mods):
+            self._xkey(w, mkc, False, state)
+        self._display.sync()
+
+    def _modcode(self, name: str) -> int:
+        from Xlib import XK
+        return self._display.keysym_to_keycode(XK.string_to_keysym(name)) or 0
+
+    def _char_to_keycode_state(self, ch: str):
+        """Resolve a character to (keycode, state) — state carries Shift when the
+        glyph sits on the shifted level of its key (e.g. '*', '+', '=' vary)."""
+        from Xlib import X
+        # For a printable ASCII char the X keysym IS its code point (Latin-1).
+        # NB: XK.string_to_keysym expects a keysym NAME ("minus","asterisk",...),
+        # not the literal glyph, so it returns 0 for '-','*','=' — hence ord().
+        keysym = ord(ch) if len(ch) == 1 and 0x20 <= ord(ch) <= 0xff else 0
+        if keysym == 0:
+            return None
+        kc = self._display.keysym_to_keycode(keysym)
+        if not kc:
+            return None
+        # Shift needed if the unshifted level isn't this keysym but the shifted is.
+        lvl0 = self._display.keycode_to_keysym(kc, 0)
+        lvl1 = self._display.keycode_to_keysym(kc, 1)
+        state = X.ShiftMask if (keysym != lvl0 and keysym == lvl1) else 0
+        return kc, state
+
     def type_text(self, text: str):
-        """Type text character by character."""
+        """Type text into the focused window (XSendEvent, per-char shift).
+
+        Re-asserts input focus on the target window and settles briefly BEFORE
+        the first key — otherwise the leading characters are dropped while the
+        widget (e.g. a just-focused GtkSourceView) finishes grabbing focus.
+        """
+        from Xlib import X
+        if self._focused_win is not None:
+            try:
+                self._focused_win.set_input_focus(X.RevertToParent, X.CurrentTime)
+                self._display.sync()
+            except Exception:
+                pass
+        time.sleep(0.6)  # let focus settle so the first chars aren't lost
         for ch in text:
-            kc = self._get_keycode(ch)
-            if kc == 0:
+            res = self._char_to_keycode_state(ch)
+            if not res:
                 continue
-            self._fake_key(kc, True)
-            self._fake_key(kc, False)
-            time.sleep(0.005)
+            kc, state = res
+            mods = (self._modcode("Shift_L"),) if (state & X.ShiftMask) else ()
+            mods = tuple(m for m in mods if m)
+            self._send_key(kc, state, mods=mods)
+            time.sleep(0.02)
 
     def press_key(self, key: str):
         """Press a key or combo (e.g., 'ctrl+c', 'alt+F4', 'Return', 'Escape')."""
@@ -213,41 +310,44 @@ class DesktopBackend:
             if pl in mod_map:
                 modifiers_to_press.append(pl)
 
-        # Map main key name
+        # Modifier state mask + the real modifier keycodes to hold down.
+        mod_keysym = {"ctrl": "Control_L", "alt": "Alt_L", "shift": "Shift_L",
+                      "super": "Super_L", "win": "Super_L", "meta": "Super_L"}
+        state = 0
+        mod_codes = []
+        for mod in modifiers_to_press:
+            state |= mod_map[mod]
+            mc = self._modcode(mod_keysym[mod])
+            if mc:
+                mod_codes.append(mc)
+
+        # Resolve the main key to a keycode (named key, else single char).
         resolved = self._key_name_map.get(main_key_name.lower(), main_key_name)
-
-        # Get keycode
         kc = self._get_keycode(resolved)
-        if kc == 0 and len(resolved) == 1:
-            kc = self._get_keycode(resolved.lower())
-
+        if kc == 0 and len(main_key_name) == 1:
+            res = self._char_to_keycode_state(main_key_name)
+            if res:
+                kc, ch_state = res
+                state |= ch_state
         if kc == 0:
             print(f"[rpa] Aviso: tecla '{key}' não mapeada", file=sys.stderr)
             return
 
-        # Press modifiers
-        for mod in modifiers_to_press:
-            mod_keysym_name = mod.capitalize() if mod != "ctrl" else "Control_L"
-            mod_kc = self._get_keycode(mod_keysym_name)
-            if mod_kc:
-                self._fake_key(mod_kc, True)
-
-        # Press main key
-        self._fake_key(kc, True)
-        self._fake_key(kc, False)
-
-        # Release modifiers (reverse order)
-        for mod in reversed(modifiers_to_press):
-            mod_keysym_name = mod.capitalize() if mod != "ctrl" else "Control_L"
-            mod_kc = self._get_keycode(mod_keysym_name)
-            if mod_kc:
-                self._fake_key(mod_kc, False)
+        self._send_key(kc, state, mods=tuple(mod_codes))
 
     # ── Screenshot ─────────────────────────────────────────
 
     def screenshot(self, path: str):
-        """Take full-screen screenshot to path (PNG)."""
-        self._mss.shot(output=path)
+        """Take a FRESH full-screen screenshot to path (PNG).
+
+        A long-lived mss instance returns stale frames for rapid successive
+        grabs on this Xorg/xrdp server (a before/after diff then sees no change,
+        breaking visual verification). Grabbing with a fresh context each call
+        forces an up-to-date frame.
+        """
+        from mss import mss as _mss
+        with _mss() as m:
+            m.shot(mon=-1, output=path)
 
     def get_pixel_color(self, x: int, y: int) -> str:
         """Return #RRGGBB of pixel at (x,y)."""
@@ -256,3 +356,83 @@ class DesktopBackend:
         pil_img = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
         r, g, b = pil_img.getpixel((0, 0))
         return f"#{r:02x}{g:02x}{b:02x}"
+
+    # ── Window targeting (the "stage") ─────────────────────
+    # RPA must act on ONE window, not the whole shared desktop. Otherwise OCR
+    # matches text in other windows (e.g. terminals) and clicks land off-target.
+
+    def list_windows(self) -> list:
+        """Enumerate viewable, named top-level windows with absolute geometry."""
+        from Xlib import X
+        out, seen = [], set()
+
+        def walk(w):
+            try:
+                children = w.query_tree().children
+            except Exception:
+                return
+            for c in children:
+                try:
+                    nm = c.get_wm_name()
+                    g = c.get_geometry()
+                    a = c.get_attributes()
+                    if (nm and a.map_state == X.IsViewable
+                            and g.width > 40 and g.height > 40 and c.id not in seen):
+                        co = self._root.translate_coords(c, 0, 0)
+                        seen.add(c.id)
+                        out.append({
+                            "id": c.id, "name": nm,
+                            "x": co.x, "y": co.y,
+                            "width": g.width, "height": g.height,
+                            "_win": c,
+                        })
+                except Exception:
+                    pass
+                walk(c)
+
+        walk(self._root)
+        return out
+
+    def find_window(self, title: str) -> Optional[dict]:
+        """Find the largest viewable window whose title contains `title`."""
+        t = title.lower()
+        matches = [w for w in self.list_windows() if t in w["name"].lower()]
+        if not matches:
+            return None
+        return sorted(matches, key=lambda w: -w["width"] * w["height"])[0]
+
+    def activate_window(self, win) -> bool:
+        """Raise, focus and keep-above a window so it owns the stage (EWMH)."""
+        from Xlib import X
+        from Xlib.protocol import event as xe
+        w = win["_win"] if isinstance(win, dict) else win
+        net_active = self._display.intern_atom("_NET_ACTIVE_WINDOW")
+        net_state = self._display.intern_atom("_NET_WM_STATE")
+        above = self._display.intern_atom("_NET_WM_STATE_ABOVE")
+        try:
+            for atom, data in ((net_state, [1, above, 0, 1, 0]),
+                               (net_active, [1, X.CurrentTime, 0, 0, 0])):
+                ev = xe.ClientMessage(window=w, client_type=atom, data=(32, data))
+                self._root.send_event(
+                    ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+            w.configure(stack_mode=X.Above)
+            self._display.sync()
+            # XTest key/button events go to the INPUT-FOCUSED window. Raising is
+            # not enough — explicitly grab keyboard focus so typed keys land here.
+            try:
+                w.set_input_focus(X.RevertToParent, X.CurrentTime)
+                self._display.sync()
+            except Exception:
+                pass
+            self._focused_win = w  # XSendEvent keyboard target
+            return True
+        except Exception as e:
+            print(f"[rpa] activate_window falhou: {e}", file=sys.stderr)
+            return False
+
+    def window_geometry(self, win) -> dict:
+        """Return current absolute {x, y, width, height} of a window."""
+        w = win["_win"] if isinstance(win, dict) else win
+        g = w.get_geometry()
+        co = self._root.translate_coords(w, 0, 0)
+        return {"x": co.x, "y": co.y, "width": g.width, "height": g.height}

@@ -76,6 +76,85 @@ class RpaEngine:
         self.retry_delay = retry_delay
         self.screenshot_dir = screenshot_dir
         self.verbose = verbose
+        # Active "stage": when set, OCR/template/grounding search ONLY inside this
+        # window region, so the cluttered shared desktop can't pollute matches.
+        self.stage_window: Optional[dict] = None
+        self.stage_region: Optional[dict] = None
+        # Self-healing: remembered visual templates of elements that were
+        # successfully located, keyed by their search text. When OCR later fails
+        # to find the text, we re-locate by template-matching the saved crop.
+        self._heal_store: dict = {}
+
+    # ── Stage (window targeting) ───────────────────────────
+
+    def target_window(self, title: str, *, settle: float = 0.6) -> ActionResult:
+        """Make the window whose title contains `title` the active stage.
+
+        Raises+focuses it and scopes all subsequent searches to its bounds.
+        This is the single most important reliability step on a shared desktop.
+        """
+        win = self.desktop.find_window(title)
+        if win is None:
+            names = [w["name"] for w in self.desktop.list_windows()]
+            return ActionResult(success=False, action=f"target_window:{title}",
+                                error=f"Janela '{title}' não encontrada",
+                                details={"windows": names})
+        self.desktop.activate_window(win)
+        time.sleep(settle)
+        geo = self.desktop.window_geometry(win)
+        self.stage_window = win
+        self.stage_region = geo
+        self._log(f"palco = '{win['name']}' @ {geo}")
+        return ActionResult(success=True, action=f"target_window:{title}",
+                            details={"window": win["name"], "region": geo})
+
+    def clear_stage(self):
+        """Drop the active stage; searches revert to the full screen."""
+        self.stage_window = None
+        self.stage_region = None
+
+    def launch_app(self, command, *, settle: float = 1.8) -> ActionResult:
+        """Launch a GUI app DETACHED (non-blocking) and return immediately.
+
+        A foreground `xcalc` (or any GUI program) never exits, so running it
+        inline blocks the agent's loop forever. We start it in its own session
+        (setsid) with stdio to /dev/null so the call returns at once. Returns the
+        pid and the windows that appeared, so the agent can target_window next.
+        """
+        import shlex
+        import subprocess
+        argv = shlex.split(command) if isinstance(command, str) else list(command)
+        if not argv:
+            return ActionResult(success=False, action="launch_app", error="comando vazio")
+        before = {w["id"] for w in self.desktop.list_windows()}
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+        except FileNotFoundError:
+            return ActionResult(success=False, action="launch_app",
+                                error=f"programa não encontrado: {argv[0]}")
+        except Exception as e:
+            return ActionResult(success=False, action="launch_app", error=str(e))
+        time.sleep(settle)
+        new_windows = [w["name"] for w in self.desktop.list_windows() if w["id"] not in before]
+        return ActionResult(
+            success=True, action="launch_app",
+            details={"command": " ".join(argv), "pid": proc.pid,
+                     "new_windows": new_windows,
+                     "hint": "App aberto (não bloqueia). Use rpa_target_window com o título."},
+        )
+
+    def _region(self, region: Optional[dict]) -> Optional[dict]:
+        """Caller region wins; otherwise fall back to the active stage."""
+        if region is not None:
+            return region
+        if self.stage_window is not None:
+            # refresh geometry in case the window moved/resized
+            self.stage_region = self.desktop.window_geometry(self.stage_window)
+        return self.stage_region
 
     def _log(self, msg: str):
         if self.verbose:
@@ -235,28 +314,123 @@ class RpaEngine:
         result.details["threshold"] = threshold
         return result
 
-    def click_text(self, text: str, region: Optional[dict] = None) -> ActionResult:
-        """Find text via OCR and click it."""
-        def do():
-            before = self._screenshot("locate_text")
-            loc = self.vision.find_text(before, text, region=region)
-            if loc is None:
-                raise RuntimeError(f"Texto '{text}' não encontrado via OCR")
-            self.desktop.mouse_click(loc["x"], loc["y"])
+    def click_text(self, text: str, region: Optional[dict] = None, *,
+                   heal: bool = True) -> ActionResult:
+        """Find text via OCR (scoped to the active stage) and click it once.
+
+        Success means we LOCATED the text and clicked it. We also sample whether
+        the stage changed and report it as `stage_changed` (informational) — but
+        we do NOT gate success on it: the before/after frame diff is unreliable
+        on this Xorg/xrdp server, and gating caused spurious repeat-clicks.
+        The agent can assert the outcome separately (OCR/read of expected state).
+        """
+        region = self._region(region)
+        before = self._screenshot("ct_before")
+        loc = self.vision.find_text(before, text, region=region)
+        healed = False
+        if loc is None and heal:
+            # OCR missed it — try to heal via a previously-learned visual template.
+            hloc = self._heal_locate(text, before, region)
+            if hloc is not None:
+                loc, healed = hloc, True
+        if loc is None:
             try:
                 os.unlink(before)
             except Exception:
                 pass
+            return ActionResult(success=False, action=f"click_text_{text[:20]}",
+                                error=f"Texto '{text}' não encontrado (OCR e self-healing)",
+                                details={"text": text})
+        self.desktop.mouse_click(loc["x"], loc["y"])
+        # Learn/refresh the template from a clean OCR hit (not from a healed one).
+        if heal and not healed:
+            self._learn_heal_template(text, before, loc["x"], loc["y"], region)
+        time.sleep(0.25)
+        after = self._screenshot("ct_after")
+        changed = self.vision.region_changed(before, after, region=region)
+        for p in (before, after):
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+        return ActionResult(
+            success=True, action=f"click_text_{text[:20]}", after_screenshot=None,
+            details={"text": text, "matched_text": loc.get("text", text),
+                     "clicked_at": {"x": loc["x"], "y": loc["y"]},
+                     "confidence": loc.get("confidence"), "stage_changed": changed,
+                     "healed": healed},
+        )
+
+    # ── Self-healing (visual template fallback) ────────────
+
+    def _learn_heal_template(self, text, screenshot_path, cx, cy, region, *, pad=26):
+        """Save a small crop around a located element as its visual signature."""
+        try:
+            from PIL import Image
+            img = Image.open(screenshot_path).convert("RGB")
+            box = (max(0, cx - pad), max(0, cy - pad),
+                   min(img.width, cx + pad), min(img.height, cy + pad))
+            path = os.path.join(self.screenshot_dir, f"heal_{abs(hash(text)) % 10**8}.png")
+            img.crop(box).save(path)
+            self._heal_store[text] = {"template": path, "pad": pad}
+        except Exception as e:
+            self._log(f"heal: falha ao aprender template de '{text}': {e}")
+
+    def _heal_locate(self, text, screenshot_path, region):
+        """Re-locate '{text}' by template-matching its learned crop, scoped to stage."""
+        entry = self._heal_store.get(text)
+        if not entry:
+            return None
+        try:
+            from PIL import Image
+            ox, oy = (region or {}).get("x", 0), (region or {}).get("y", 0)
+            img = Image.open(screenshot_path).convert("RGB")
+            if region:
+                img = img.crop((ox, oy, ox + region["width"], oy + region["height"]))
+            tmp = os.path.join(self.screenshot_dir, "heal_scene.png")
+            img.save(tmp)
+            m = self.vision.locate(tmp, entry["template"], threshold=0.7)
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            if m is None:
+                return None
+            self._log(f"heal: '{text}' re-localizado por template em ({ox+m['x']},{oy+m['y']})")
+            return {"x": ox + m["x"], "y": oy + m["y"], "text": text, "confidence": m.get("confidence")}
+        except Exception as e:
+            self._log(f"heal: falha ao re-localizar '{text}': {e}")
+            return None
+
+    def click_describe(self, description: str, region: Optional[dict] = None) -> ActionResult:
+        """Locate an element by natural-language description via the VLM (grounding)
+        and click it. The fallback for glyph/icon controls OCR can't read."""
+        region = self._region(region)
+        if not self.vlm:
+            return ActionResult(success=False, action=f"click_describe:{description[:20]}",
+                                error="VLM indisponível para grounding")
+        state = {"loc": None}
+
+        def do():
+            shot = self._screenshot("ground")
+            loc = self.vision.ground(self.vlm, shot, description, region=region)
+            try:
+                os.unlink(shot)
+            except Exception:
+                pass
+            if loc is None:
+                raise RuntimeError(f"VLM não localizou '{description}'")
+            state["loc"] = loc
+            self.desktop.mouse_click(loc["x"], loc["y"])
 
         def check():
-            return True  # OCR-based — trust the match
+            return state["loc"] is not None
 
-        result = self.act(
-            f"click_text_{text[:20]}",
-            do, check,
-            verify_desc=f"clique no texto '{text}'",
-        )
-        result.details["text"] = text
+        result = self.act(f"click_describe_{description[:20]}", do, check,
+                          verify_desc=f"grounding de '{description}'")
+        if state["loc"]:
+            result.details["clicked_at"] = state["loc"]
+        result.details["description"] = description
         return result
 
     def type_text(self, text: str) -> ActionResult:
@@ -358,7 +532,8 @@ class RpaEngine:
 
     def wait_for_text(self, text: str, timeout: float = 30.0,
                       interval: float = 0.5, region: Optional[dict] = None) -> ActionResult:
-        """Wait until text appears on screen (via OCR)."""
+        """Wait until text appears on screen (via OCR), scoped to the active stage."""
+        region = self._region(region)
         deadline = time.time() + timeout
 
         def do():

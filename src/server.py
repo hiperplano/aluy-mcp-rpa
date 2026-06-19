@@ -38,10 +38,17 @@ if not os.environ.get("DISPLAY"):
 try:
     from mcp.server import Server, NotificationOptions
     from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
+    from mcp.types import Tool, TextContent, ImageContent
 except ImportError:
     print("mcp SDK não encontrado. Instale: pip install mcp", file=sys.stderr)
     sys.exit(1)
+
+# Allow `python3 src/server.py` (no package context): make this file part of the
+# `src` package by putting the repo root on sys.path and setting __package__,
+# so the relative imports below resolve. Running as `-m src.server` is unaffected.
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "src"
 
 from .backends import detect_backends
 from .engine import RpaEngine, ActionResult
@@ -55,19 +62,33 @@ from .complex import (
 
 # ── Global engine ─────────────────────────────────────────
 
+import threading
+
 _engine: RpaEngine = None
+_engine_lock = threading.Lock()
 
 
 def get_engine() -> RpaEngine:
     global _engine
-    if _engine is None:
-        desktop, vision, vlm = detect_backends()
-        if desktop is None:
-            raise RuntimeError("Desktop backend indisponível")
-        if vision is None:
-            raise RuntimeError("Vision backend indisponível")
-        _engine = RpaEngine(desktop, vision, vlm)
+    with _engine_lock:
+        if _engine is None:
+            desktop, vision, vlm = detect_backends()
+            if desktop is None:
+                raise RuntimeError("Desktop backend indisponível")
+            if vision is None:
+                raise RuntimeError("Vision backend indisponível")
+            _engine = RpaEngine(desktop, vision, vlm)
     return _engine
+
+
+def _warm_ocr():
+    """Pré-carrega o EasyOCR em background no boot, para a PRIMEIRA chamada de
+    tool não pagar a carga fria (~30-60s) e estourar o timeout de 60s do MCP."""
+    try:
+        get_engine().vision._ensure_ocr()
+        print("[rpa] EasyOCR pré-aquecido", file=sys.stderr)
+    except Exception as e:
+        print(f"[rpa] warm OCR falhou (não-fatal): {e}", file=sys.stderr)
 
 
 # ── Tool schemas ──────────────────────────────────────────
@@ -75,10 +96,16 @@ def get_engine() -> RpaEngine:
 TOOLS = [
     Tool(
         name="rpa_screenshot",
-        description="Tira um screenshot da tela primária e salva em /tmp.",
+        description=("Lê a tela: retorna o TEXTO VISÍVEL com pontos de clique "
+                     "(ex.: '7 @(683,667)'). Use os rótulos para rpa_click_text/rpa_click_at. "
+                     "Recortado no palco; full=true p/ tela inteira; image=true inclui o PNG "
+                     "(só p/ modelos de visão)."),
         inputSchema={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "full": {"type": "boolean", "description": "true = tela inteira; default = só o palco."},
+                "image": {"type": "boolean", "description": "true = inclui a imagem PNG além do texto."},
+            },
         },
     ),
     Tool(
@@ -143,7 +170,9 @@ TOOLS = [
     ),
     Tool(
         name="rpa_type_text",
-        description="Digita texto no elemento com foco.",
+        description=("Digita texto no elemento com foco. ATENÇÃO: o teclado pode NÃO ter "
+                     "efeito em apps Wine (ex.: MetaTrader) ou alguns toolkits — se o texto "
+                     "não aparecer, prefira clicar no campo e/ou usar cliques."),
         inputSchema={
             "type": "object",
             "properties": {
@@ -154,7 +183,10 @@ TOOLS = [
     ),
     Tool(
         name="rpa_press_key",
-        description="Pressiona tecla ou combo (ex.: 'ctrl+c', 'alt+F4', 'Return', 'Escape').",
+        description=("Pressiona tecla ou combo (ex.: 'ctrl+c', 'alt+F4', 'Return', 'Escape', 'F9'). "
+                     "ATENÇÃO: atalhos/teclas podem NÃO funcionar em apps Wine (MetaTrader) e alguns "
+                     "toolkits. Se a tela não mudar, NÃO insista no teclado — abra o recurso por "
+                     "clique (botão de toolbar, menu, painel)."),
         inputSchema={
             "type": "object",
             "properties": {
@@ -245,7 +277,7 @@ TOOLS = [
     ),
     Tool(
         name="rpa_describe_screen",
-        description="Descreve a tela atual usando VLM (Ollama ou BLIP).",
+        description="Lê a tela e retorna o TEXTO VISÍVEL com pontos de clique (igual rpa_screenshot).",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -253,7 +285,7 @@ TOOLS = [
     ),
     Tool(
         name="rpa_ask_screen",
-        description="Faz uma pergunta sobre a tela atual (VLM).",
+        description="Lê a tela (TEXTO VISÍVEL + pontos de clique) para você responder a pergunta.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -355,6 +387,42 @@ TOOLS = [
             "required": ["header", "cell_text"],
         },
     ),
+    Tool(
+        name="rpa_launch",
+        description=(
+            "Abre um app gráfico SEM BLOQUEAR (destacado). Use ISTO para abrir programas "
+            "(ex.: 'xcalc', 'mousepad arquivo.txt') — NÃO rode o app pelo bash, porque um "
+            "processo gráfico de primeiro plano não retorna e TRAVA o loop. Retorna na hora "
+            "com o pid e as janelas novas; depois chame rpa_target_window."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Comando do app (ex.: 'xcalc')."},
+            },
+            "required": ["command"],
+        },
+    ),
+    Tool(
+        name="rpa_target_window",
+        description=(
+            "Define a JANELA-ALVO (o 'palco'). Eleva/foca a janela cujo título "
+            "contém `title` e passa a restringir TODAS as buscas (OCR, template, "
+            "grounding) e cliques a ela. Chame ISTO antes de interagir com um app: "
+            "evita que o OCR case texto de outras janelas (terminais, etc.). "
+            "Retorna a região {x,y,width,height} do palco."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Trecho do título da janela (ex.: 'Calculator')."},
+            },
+            "required": ["title"],
+        },
+    ),
+    # rpa_click_describe (VLM grounding) foi REMOVIDO do toolset: o VLM nesta
+    # máquina estoura a memória / passa dos 60s do timeout MCP e DERRUBA o server
+    # (reinício fail-soft). Use rpa_click_text / rpa_click_at + a perceção por texto.
 ]
 
 TOOL_MAP = {t.name: t for t in TOOLS}
@@ -362,13 +430,72 @@ TOOL_MAP = {t.name: t for t in TOOLS}
 
 # ── Tool dispatcher ───────────────────────────────────────
 
+def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: dict = None):
+    """Perceive the screen for the agent. Returns the visible TEXT via OCR (with
+    click points) — works for TEXT-only models (deepseek etc.) — plus the image
+    (for vision models). Scoped to the active stage window unless full=True."""
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    path = engine.screenshot()
+    img = Image.open(path)
+    reg = engine.stage_region
+    scoped = bool(reg and not full)
+    region = reg if scoped else None
+    # OCR text — THIS is what a text-only agent reads.
+    try:
+        tokens = engine.vision.ocr_tokens(path, region=region)
+    except Exception as e:
+        tokens = []
+    if scoped:
+        img = img.crop((reg["x"], reg["y"], reg["x"] + reg["width"], reg["y"] + reg["height"]))
+    meta = {
+        "scope": "stage" if scoped else "full",
+        "size": list(img.size),
+        "visible_text": [f"{t['text']} @({t['x']},{t['y']})" for t in tokens],
+        "hint": "Texto visível na tela com pontos de clique. Use rpa_click_text(<texto>) "
+                "ou rpa_click_at(x,y). Se vazio, chame rpa_target_window primeiro.",
+    }
+    if extra:
+        meta.update(extra)
+    content = [TextContent(type="text", text=json.dumps(meta, ensure_ascii=False))]
+    if with_image:
+        buf = BytesIO(); img.convert("RGB").save(buf, format="PNG")
+        content.append(ImageContent(type="image",
+                                    data=base64.b64encode(buf.getvalue()).decode(),
+                                    mimeType="image/png"))
+    try:
+        os.unlink(path)
+    except Exception:
+        pass
+    return content
+
+
 async def handle_call(name: str, arguments: dict) -> list[TextContent]:
     engine = get_engine()
 
     try:
-        if name == "rpa_screenshot":
-            path = engine.screenshot()
-            return [TextContent(type="text", text=json.dumps({"path": path}))]
+        if name == "rpa_launch":
+            r = engine.launch_app(arguments["command"])
+            return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
+
+        elif name == "rpa_target_window":
+            r = engine.target_window(arguments["title"])
+            return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
+
+        elif name == "rpa_click_describe":
+            # Desativado: o VLM derruba o server (OOM / >60s). Redireciona, rápido.
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "error": "rpa_click_describe desativado (VLM instável nesta máquina). "
+                         "Use rpa_screenshot para ler 'visible_text' com pontos de clique, "
+                         "depois rpa_click_text(<rótulo>) ou rpa_click_at(x,y)."}))]
+
+        elif name == "rpa_screenshot":
+            # Perceive: visible OCR text (+ click points) for text-only models.
+            # Pass image=true to ALSO include the PNG (for vision-capable models).
+            return _perceive(engine, full=bool(arguments.get("full")),
+                             with_image=bool(arguments.get("image")))
 
         elif name == "rpa_click_at":
             r = engine.click_at(
@@ -430,12 +557,12 @@ async def handle_call(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
 
         elif name == "rpa_describe_screen":
-            desc = engine.describe_screen()
-            return [TextContent(type="text", text=desc)]
+            # Perceive as TEXT (OCR tokens + click points) — funciona para modelos
+            # só-texto (deepseek) — mais a imagem para modelos de visão.
+            return _perceive(engine)
 
         elif name == "rpa_ask_screen":
-            answer = engine.ask_screen(arguments["question"])
-            return [TextContent(type="text", text=answer)]
+            return _perceive(engine, extra={"question": arguments["question"]})
 
         elif name == "rpa_select_combobox":
             r = select_combobox(engine, arguments["label"], arguments["option"])
@@ -477,11 +604,58 @@ async def handle_call(name: str, arguments: dict) -> list[TextContent]:
 
 # ── Server ────────────────────────────────────────────────
 
+RPA_INSTRUCTIONS = """\
+Motor de RPA de tela (mouse + teclado + OCR). SIGA este playbook para não quebrar:
+
+1. MIRE A JANELA PRIMEIRO. Sempre chame `rpa_target_window` (title = trecho do título)
+   antes de qualquer coisa. Sem isso o OCR casa texto de outras janelas e o clique erra.
+   Abra apps com `rpa_launch` (NUNCA pelo bash: um app gráfico de 1º plano trava o loop).
+
+2. PERCEBA POR TEXTO. `rpa_screenshot` / `rpa_describe_screen` retornam `visible_text`:
+   uma lista do que está na tela COM pontos de clique (ex.: "Sell @(1349,334)"). Leia essa
+   lista e aja por ela. NÃO peça imagem (image=true) nem use VLM/analyze — é lento e pode travar.
+
+3. AÇÃO: PREFIRA CLIQUES. O mouse (`rpa_click_text`, `rpa_click_at`) funciona em QUALQUER app.
+   O TECLADO (`rpa_type_text`, `rpa_press_key` — inclusive F9/Enter/atalhos) pode NÃO ter efeito
+   em apps Wine (ex.: MetaTrader) e alguns toolkits. Regra: se uma tecla/atalho não mudar a tela,
+   NÃO insista no teclado — abra o recurso por clique (botão de toolbar, menu, painel).
+
+4. ESPERE O INESPERADO. Podem surgir diálogos de confirmação/termos (ex.: "One Click Trading",
+   "Accept", "OK", "Save"). Após cada ação importante, tire `rpa_screenshot`, leia o `visible_text`,
+   e clique no botão certo. Se um botão não for achado, use o rótulo EXATO que aparece na lista.
+
+5. VERIFIQUE. Confirme o efeito lendo a tela de novo (`rpa_screenshot`) antes de declarar sucesso —
+   a verificação visual interna é só uma dica (`stage_changed`), não prova que a ação surtiu efeito.
+"""
+
+
+def _check_resources():
+    """Warn (não corrige) se a memória estiver apertada — EasyOCR/VLM podem
+    estourar sem headroom. Swap é config de SISTEMA (não do server): ver o
+    bloco 'Requisitos' no README (precisa /swapfile + /etc/fstab)."""
+    try:
+        info = {}
+        for line in open("/proc/meminfo"):
+            k, v = line.split(":", 1)
+            info[k.strip()] = int(v.strip().split()[0])  # kB
+        avail_mb = info.get("MemAvailable", 0) // 1024
+        swap_mb = info.get("SwapTotal", 0) // 1024
+        if swap_mb == 0 and avail_mb < 4096:
+            print(f"[rpa] AVISO: {avail_mb}MB livres e SEM swap. EasyOCR/VLM podem "
+                  f"causar OOM. Configure swap (ver README: /swapfile + fstab).",
+                  file=sys.stderr)
+        elif avail_mb + swap_mb < 3072:
+            print(f"[rpa] AVISO: pouca memória ({avail_mb}MB livres + {swap_mb}MB swap). "
+                  f"Operações pesadas podem ficar lentas/instáveis.", file=sys.stderr)
+    except Exception:
+        pass
+
+
 async def main():
-    server = Server(
-        {"name": "aluy-mcp-rpa", "version": "0.1.0"},
-        capabilities={"tools": {}},
-    )
+    _check_resources()
+    # Aquece o EasyOCR em background (não bloqueia o handshake MCP).
+    threading.Thread(target=_warm_ocr, daemon=True).start()
+    server = Server("aluy-mcp-rpa", "0.1.0", instructions=RPA_INSTRUCTIONS)
 
     @server.list_tools()
     async def list_tools():

@@ -1,4 +1,5 @@
 mcp>=1.0.0
+python-Xlib>=0.33
 Pillow>=10.0
 opencv-python-headless>=4.8
 numpy>=1.24

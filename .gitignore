@@ -1,10 +1,5 @@
 __pycache__/
 *.pyc
 *.pyo
-.env
-*.egg-info/
-dist/
-*.png
-/tmp/
-node_modules/
-.DS_Store
+.venv/
+venv/
