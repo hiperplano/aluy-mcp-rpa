@@ -34,7 +34,7 @@ except ImportError:
 class VisionBackend:
     """Visual operations: template matching, OCR, diff."""
 
-    def __init__(self):
+    def __init__(self, *, ocr_gpu: bool = False, ocr_canvas: int = 1280):
         if not _HAS_CV2:
             raise RuntimeError("OpenCV não instalado. pip install opencv-python-headless")
         if not _HAS_PIL:
@@ -42,8 +42,10 @@ class VisionBackend:
 
         self._ocr_reader = None
         self._ocr_loaded = False
-        print(f"[rpa] Vision backend: OpenCV ok, EasyOCR={'sim' if _HAS_EASYOCR else 'não'}",
-              file=sys.stderr)
+        self._ocr_gpu = ocr_gpu        # detectado: usa GPU se houver
+        self._ocr_canvas = ocr_canvas  # detectado: capa o processamento p/ caber em 60s
+        print(f"[rpa] Vision backend: OpenCV ok, EasyOCR={'sim' if _HAS_EASYOCR else 'não'} "
+              f"(gpu={ocr_gpu}, canvas={ocr_canvas})", file=sys.stderr)
 
     # ── Template Matching ──────────────────────────────────
 
@@ -135,7 +137,7 @@ class VisionBackend:
             return
         if _HAS_EASYOCR:
             os.environ.setdefault("EASYOCR_VERBOSE", "0")
-            self._ocr_reader = easyocr.Reader(["pt", "en"], gpu=False, verbose=False)
+            self._ocr_reader = easyocr.Reader(["pt", "en"], gpu=self._ocr_gpu, verbose=False)
         self._ocr_loaded = True
 
     def ocr(self, image_path: str, region: Optional[dict] = None) -> str:
@@ -200,7 +202,7 @@ class VisionBackend:
         # server). As coordenadas voltam no espaço da imagem original.
         for bbox, txt, conf in self._ocr_reader.readtext(
                 np.array(img), detail=1, paragraph=False, text_threshold=0.4,
-                low_text=0.3, canvas_size=1280, mag_ratio=1.0):
+                low_text=0.3, canvas_size=self._ocr_canvas, mag_ratio=1.0):
             if conf < min_conf or not txt.strip():
                 continue
             cx = int((bbox[0][0] + bbox[2][0]) / 2 / scale) + ox
@@ -241,7 +243,7 @@ class VisionBackend:
         import numpy as _np
         results = self._ocr_reader.readtext(
             _np.array(img), detail=1, paragraph=False,
-            text_threshold=0.4, low_text=0.3, canvas_size=1280, mag_ratio=1.0,
+            text_threshold=0.4, low_text=0.3, canvas_size=self._ocr_canvas, mag_ratio=1.0,
         )
 
         text_lower = text.strip().lower()
