@@ -483,13 +483,27 @@ class RpaEngine:
                 vl, vt = self._vorigin()
                 cp = u.click_point(title, text, vleft=vl, vtop=vt)
                 if cp:
+                    # AÇÃO por PAPEL do controle (desambiguação):
+                    #  - tem Expand (menu-bar/combo, ex.: 'Arquivo') → CLICA o rect
+                    #    (abre o dropdown; Invoke num menu-bar só seleciona).
+                    #  - tem Invoke sem expand (comando/botão, ex.: 'Nova Ordem',
+                    #    'Buy') → INVOKE (confiável; o rect pode estar velho/errado —
+                    #    foi o bug: clicava (924,143) e não abria; Invoke abre).
+                    #  - senão → clica o rect (label) se on-screen.
                     onscreen = cp.get("x") is not None and cp["x"] >= 0 and cp["y"] >= 0
-                    if onscreen:
+                    method = None
+                    if cp.get("can_expand") and onscreen:
                         self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
-                    elif cp["can_invoke"]:
-                        cp["_ctrl"].GetInvokePattern().Invoke(); method = "invoke"
-                    else:
+                    elif cp.get("can_invoke"):
+                        try:
+                            cp["_ctrl"].GetInvokePattern().Invoke(); method = "invoke"
+                        except Exception:
+                            if onscreen:
+                                self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
+                    elif onscreen:
                         self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
+                    if method is None:
+                        raise RuntimeError("controle sem ação UIA utilizável — cai no OCR")
                     time.sleep(0.2)
                     return ActionResult(
                         success=True, action=f"click_text_{text[:20]}",

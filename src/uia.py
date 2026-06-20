@@ -198,7 +198,8 @@ def click_point(title, name, *, control_type=None, vleft=0, vtop=0):
         return None
     r = el["rect"]
     return {"x": r["cx"], "y": r["cy"], "name": el["name"],
-            "can_invoke": "invoke" in el["patterns"], "_ctrl": el["_ctrl"]}
+            "can_invoke": "invoke" in el["patterns"],
+            "can_expand": "expand" in el["patterns"], "_ctrl": el["_ctrl"]}
 
 
 def _find_scrollable(title):
