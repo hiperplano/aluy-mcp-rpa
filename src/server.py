@@ -464,6 +464,27 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
         tokens = []
     if scoped:
         img = img.crop((reg["x"], reg["y"], reg["x"] + reg["width"], reg["y"] + reg["height"]))
+    # PERCEÇÃO NÍVEL 1 (UIA, Windows): lê a ÁRVORE de acessibilidade da janela-palco
+    # — controles com NOME, TIPO, ação (invoke/value/...) e ponto de clique EXATO,
+    # independente de foco/z-order/clutter (o OCR lia a janela errada quando o alvo
+    # não estava à frente). É isto que o agente deve preferir; o OCR vira fallback
+    # p/ texto custom-desenhado fora da árvore.
+    ui_elements = []
+    try:
+        from . import uia as _uia
+        stage_title = engine.stage_window.get("name") if isinstance(engine.stage_window, dict) else None
+        if _uia.available() and stage_title and not full:
+            vl, vt = getattr(engine.desktop, "_vleft", 0), getattr(engine.desktop, "_vtop", 0)
+            for e in _uia.dump(stage_title, maxd=10, limit=200, vleft=vl, vtop=vt):
+                if not (e.get("name") and e.get("patterns") and e.get("rect")):
+                    continue
+                r = e["rect"]
+                ui_elements.append(
+                    f"{e['type'].replace('Control','')} '{e['name'][:40]}' "
+                    f"@({r['cx']},{r['cy']}) [{','.join(e['patterns'])}]")
+    except Exception as e:
+        print(f"[rpa] perceive UIA falhou: {e}", file=sys.stderr)
+
     meta = {
         "scope": "stage" if scoped else "full",
         "size": list(img.size),
@@ -471,6 +492,12 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
         "hint": "Texto visível na tela com pontos de clique. Use rpa_click_text(<texto>) "
                 "ou rpa_click_at(x,y). Se vazio, chame rpa_target_window primeiro.",
     }
+    if ui_elements:
+        meta["ui_elements"] = ui_elements
+        meta["hint"] = ("PREFIRA `ui_elements`: são os controles reais (acessibilidade UIA) "
+                        "com nome+tipo+ação e ponto EXATO — leitura confiável mesmo sem foco. "
+                        "Use rpa_click_text('<nome do elemento>') (aciona por UIA) ou rpa_click_at(x,y). "
+                        "`visible_text` é OCR de fallback (texto custom fora da árvore).")
     # Popup/modal bloqueando o palco? (ex.: diálogo de confirmação surgiu após o
     # target). A janela-palco fica DESABILITADA — interagir nela não tem efeito.
     # Avisa o agente p/ mirar o popup, em vez de ele ficar batendo na janela morta.
