@@ -183,13 +183,15 @@ TOOLS = [
     ),
     Tool(
         name="rpa_type_text",
-        description=("Digita texto no elemento com foco. ATENÇÃO: o teclado pode NÃO ter "
-                     "efeito em apps Wine (ex.: MetaTrader) ou alguns toolkits — se o texto "
-                     "não aparecer, prefira clicar no campo e/ou usar cliques."),
+        description=("Digita texto no elemento com foco. Use clear=true p/ LIMPAR o campo "
+                     "antes (essencial em campos numéricos/spinbox como volume e preço do "
+                     "MetaTrader, que senão concatenam e viram lixo). ATENÇÃO: o teclado pode "
+                     "NÃO ter efeito em alguns toolkits — se o texto não aparecer, clique no campo."),
         inputSchema={
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "Texto a digitar."},
+                "clear": {"type": "boolean", "description": "true = limpa o campo focado antes de digitar (Ctrl+A+Del e Backspaces). Default: false."},
             },
             "required": ["text"],
         },
@@ -546,7 +548,7 @@ async def handle_call(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
 
         elif name == "rpa_type_text":
-            r = engine.type_text(arguments["text"])
+            r = engine.type_text(arguments["text"], clear=bool(arguments.get("clear")))
             return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
 
         elif name == "rpa_press_key":

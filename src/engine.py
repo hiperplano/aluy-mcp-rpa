@@ -493,9 +493,31 @@ class RpaEngine:
         result.details["description"] = description
         return result
 
-    def type_text(self, text: str) -> ActionResult:
-        """Type text at current focus."""
+    def _clear_field(self, *, n: int = 24):
+        """Limpa o campo FOCADO de forma robusta antes de digitar. Combina dois
+        métodos porque campos custom (spinbox de volume/preço do MT5) IGNORAM o
+        select-all: (1) Ctrl+A + Delete (campos padrão); (2) End + Backspace×n
+        (apaga tudo da direita p/ esquerda, cobre os spinboxes). Sem isso o
+        agente tinha que orquestrar isso na unha (frágil)."""
+        d = self.desktop
+        try:
+            d.press_key("ctrl+a"); time.sleep(0.04)
+            d.press_key("Delete"); time.sleep(0.04)
+        except Exception:
+            pass
+        try:
+            d.press_key("End"); time.sleep(0.03)
+            for _ in range(n):
+                d.press_key("backspace"); time.sleep(0.008)
+        except Exception:
+            pass
+
+    def type_text(self, text: str, *, clear: bool = False) -> ActionResult:
+        """Type text at current focus. clear=True limpa o campo antes (robusto p/
+        campos custom, ex.: preço/volume do MT5)."""
         def do():
+            if clear:
+                self._clear_field()
             self.desktop.type_text(text)
 
         def check():
@@ -503,6 +525,7 @@ class RpaEngine:
 
         result = self.act(f"type_{len(text)}chars", do, check, verify_desc="digitar texto")
         result.details["text_length"] = len(text)
+        result.details["cleared"] = clear
         return result
 
     def press_key(self, key: str) -> ActionResult:
