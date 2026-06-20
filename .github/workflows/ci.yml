@@ -9,9 +9,10 @@ name: CI
 #     do Windows, e detecção de capacidades.
 # O que precisa de display fica como validação manual (scripts/validate_*.py).
 #
-# Roda num SELF-HOSTED runner Windows (a org não tem Actions hospedado). O shell
-# padrão no Windows é PowerShell; fixamos `powershell` (5.1, sempre presente) p/
-# não depender de `pwsh` 7 nem de bash, que podem faltar num runner novo.
+# Roda num SELF-HOSTED runner Windows (a org não tem Actions hospedado). Usa o
+# Python JÁ INSTALADO na máquina — `actions/setup-python` tenta *instalar* uma
+# versão baixada e o instalador quebra em self-hosted. O shell é `powershell`
+# (5.1, sempre presente) p/ não depender de pwsh 7 nem de bash no runner.
 
 on:
   push:
@@ -26,17 +27,11 @@ jobs:
   static:
     name: Lint + sintaxe + smoke
     runs-on: [self-hosted, windows, x64]
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      - name: Python da máquina
+        run: python --version
 
       - name: Install dev tools
         run: python -m pip install --upgrade pip ruff pytest
