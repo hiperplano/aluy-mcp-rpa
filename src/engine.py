@@ -385,29 +385,30 @@ class RpaEngine:
         """
         region = self._region(region)
 
-        # UIA-first (Windows): acha o controle por nome na árvore e age NATIVO —
-        # Invoke (botão/menu/item) ou clique no rect EXATO (label). Sem OCR, sem
-        # coordenada adivinhada, sem depender de foco. Resolve o que doía no MT5.
+        # UIA-first (Windows): acha o controle por nome na árvore (EXATO, sem OCR,
+        # sem adivinhar coordenada, independe de foco) e CLICA o rect com mouse
+        # REAL. O clique replica o usuário e ABRE menus/dropdowns — o Invoke num
+        # menu-bar do MT5 só selecionava, não abria (feedback do Tiago). Invoke
+        # fica de fallback só p/ controle sem rect on-screen (coberto/fora da tela).
         u, title = self._uia(), self._stage_title()
         if u and title:
             try:
                 vl, vt = self._vorigin()
                 cp = u.click_point(title, text, vleft=vl, vtop=vt)
                 if cp:
-                    invoked = False
-                    if cp["can_invoke"]:
-                        try:
-                            cp["_ctrl"].GetInvokePattern().Invoke(); invoked = True
-                        except Exception:
-                            invoked = False
-                    if not invoked:
-                        self.desktop.mouse_click(cp["x"], cp["y"])
+                    onscreen = cp.get("x") is not None and cp["x"] >= 0 and cp["y"] >= 0
+                    if onscreen:
+                        self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
+                    elif cp["can_invoke"]:
+                        cp["_ctrl"].GetInvokePattern().Invoke(); method = "invoke"
+                    else:
+                        self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
                     time.sleep(0.2)
                     return ActionResult(
                         success=True, action=f"click_text_{text[:20]}",
                         details={"text": text, "matched_text": cp["name"],
                                  "clicked_at": {"x": cp["x"], "y": cp["y"]},
-                                 "via": "uia", "method": "invoke" if invoked else "click_rect"})
+                                 "via": "uia", "method": method})
             except Exception as e:
                 self._log(f"click_text UIA falhou ({e}); fallback OCR")
 
