@@ -10,3 +10,7 @@ pyscreeze>=0.1
 # Backend de ação PORTÁVEL (Windows/macOS, EST-1147) — instale SÓ no Win/Mac
 # (no Linux usa-se o backend Xlib; pygetwindow não suporta Linux):
 #   pip install pyautogui pygetwindow
+
+# Backend de ACESSIBILIDADE UIA (nível 1 do localizador) — SÓ Windows. Ação
+# nativa exata (Invoke/SetValue/Select) sem OCR. Opcional: ausente → cai no OCR.
+#   pip install uiautomation comtypes        # (Linux usa AT-SPI; macOS: futuro)

@@ -12,66 +12,104 @@ from ..engine import RpaEngine, ActionResult
 
 # ── Combobox ──────────────────────────────────────────────
 
+def _option_shown(engine, option_text: str, reg) -> bool:
+    """True se o texto da opção está visível no palco — usado p/ VERIFICAR que a
+    seleção pegou (a versão antiga retornava success sem conferir)."""
+    try:
+        ss = engine.screenshot("combo_verify")
+        loc = engine.vision.find_text(ss, option_text, region=reg)
+        try:
+            import os; os.unlink(ss)
+        except Exception:
+            pass
+        return loc is not None
+    except Exception:
+        return False
+
+
 def select_combobox(
     engine: RpaEngine,
     label_text: str,
     option_text: str,
     *,
-    open_delay: float = 0.3,
+    open_delay: float = 0.4,
+    combo_at: dict = None,
 ) -> ActionResult:
-    """Select an option from a combobox/dropdown.
+    """Seleciona uma opção de combobox/dropdown — ENDURECIDO.
 
-    Strategy:
-    1. Find the label text via OCR
-    2. Click the combobox (slightly below/right of the label)
-    3. Wait for dropdown to open
-    4. Find and click the option text
+    Estratégias, em ordem, com VERIFICAÇÃO no fim (só reporta sucesso se a opção
+    aparecer de fato):
+      1. Localiza o combo: por `combo_at={x,y}` explícito, OU 200px à direita do
+         label, OU pelo próprio texto do valor atual (combos sem label, ex.: MT5).
+      2. Abre: clica no controle; se não achar a opção, clica a SETA (borda
+         direita) e tenta Alt+Down (abre combo nativo via teclado).
+      3. Acha a opção na TELA INTEIRA (dropdowns nativos abrem como popup FORA da
+         janela — busca escopada não os enxerga) e clica.
+      4. Fallback teclado: type-ahead (digita a opção) + Enter — funciona em
+         combos nativos resistentes a clique.
+      5. VERIFICA relendo a tela; tenta as estratégias em sequência até passar.
     """
-    label_screenshot = engine.screenshot("combobox_label")
+    reg = engine._region(None)
 
-    # Find label position
-    label_loc = engine.vision.find_text(label_screenshot, label_text)
-    if label_loc is None:
-        return ActionResult(
-            success=False,
-            action=f"combobox_select_{label_text}",
-            error=f"Label '{label_text}' não encontrada",
-        )
+    # 1) ponto do combo
+    if combo_at and "x" in combo_at:
+        cb_x, cb_y = combo_at["x"], combo_at["y"]
+    else:
+        ss = engine.screenshot("combo_find")
+        # tenta o label; se não houver, usa o próprio texto do valor (option pode
+        # não casar, mas label_text costuma ser o rótulo OU o valor atual).
+        loc = engine.vision.find_text(ss, label_text, region=reg)
+        try:
+            import os; os.unlink(ss)
+        except Exception:
+            pass
+        if loc is None:
+            return ActionResult(success=False, action=f"combobox_select_{label_text}",
+                                error=f"Combo/label '{label_text}' não encontrado")
+        # se achou um LABEL, o combo está à direita; se achou o próprio controle,
+        # clica nele mesmo. Heurística: tenta no ponto e, se falhar, +200px.
+        cb_x, cb_y = loc["x"], loc["y"]
 
-    # Click the combobox (to the right of the label)
-    cb_x = label_loc["x"] + 200  # heuristic: combobox is to the right
-    cb_y = label_loc["y"]
+    def _try_click_option() -> bool:
+        # dropdown nativo abre FORA da janela → busca na tela inteira
+        ss = engine.screenshot("combo_dd")
+        opt = engine.vision.find_text(ss, option_text, region=None)
+        try:
+            import os; os.unlink(ss)
+        except Exception:
+            pass
+        if opt is None:
+            return False
+        engine.desktop.mouse_click(opt["x"], opt["y"])
+        time.sleep(0.25)
+        return _option_shown(engine, option_text, reg)
 
-    engine.click_at(cb_x, cb_y)
-    time.sleep(open_delay)
+    # Estratégia A: clica o controle, procura a opção (tela inteira)
+    engine.desktop.mouse_click(cb_x, cb_y); time.sleep(open_delay)
+    if _try_click_option():
+        return ActionResult(success=True, action=f"combobox_select_{label_text}",
+                            details={"option": option_text, "method": "click", "verified": True})
 
-    # Screenshot of opened dropdown
-    dropdown_screenshot = engine.screenshot("combobox_dropdown")
+    # Estratégia B: clica a SETA (borda direita, ~+90px) e procura de novo
+    engine.desktop.mouse_click(cb_x + 90, cb_y); time.sleep(open_delay)
+    if _try_click_option():
+        return ActionResult(success=True, action=f"combobox_select_{label_text}",
+                            details={"option": option_text, "method": "arrow+click", "verified": True})
 
-    # Find option in dropdown
-    option_loc = engine.vision.find_text(dropdown_screenshot, option_text)
-    if option_loc is None:
-        # Try pressing the option text (type to filter)
-        engine.type_text(option_text)
-        time.sleep(0.3)
-        engine.press_key("Return")
-        return ActionResult(
-            success=True,
-            action=f"combobox_select_{label_text}",
-            details={"label": label_text, "option": option_text, "method": "type+enter"},
-        )
+    # Estratégia C: teclado — Alt+Down abre, type-ahead seleciona, Enter confirma
+    engine.desktop.mouse_click(cb_x, cb_y); time.sleep(0.2)
+    engine.press_key("alt+Down"); time.sleep(open_delay)
+    if _try_click_option():
+        return ActionResult(success=True, action=f"combobox_select_{label_text}",
+                            details={"option": option_text, "method": "altdown+click", "verified": True})
+    engine.type_text(option_text); time.sleep(0.2); engine.press_key("Return"); time.sleep(0.3)
+    if _option_shown(engine, option_text, reg):
+        return ActionResult(success=True, action=f"combobox_select_{label_text}",
+                            details={"option": option_text, "method": "type+enter", "verified": True})
 
-    # Click the option
-    engine.click_at(option_loc["x"], option_loc["y"])
-    time.sleep(0.2)
-
-    # Verify by checking if dropdown closed (simplified)
-    result = ActionResult(
-        success=True,
-        action=f"combobox_select_{label_text}",
-        details={"label": label_text, "option": option_text, "method": "click_option"},
-    )
-    return result
+    return ActionResult(success=False, action=f"combobox_select_{label_text}",
+                        error=f"Não consegui selecionar '{option_text}' (combo resistente a "
+                              f"clique/teclado sintético — comum em controles custom, ex.: MT5)")
 
 
 # ── Tabs ──────────────────────────────────────────────────
@@ -87,7 +125,7 @@ def click_tab(engine: RpaEngine, tab_name: str) -> ActionResult:
     """
     before = engine.screenshot("tab_before")
 
-    tab_loc = engine.vision.find_text(before, tab_name)
+    tab_loc = engine.vision.find_text(before, tab_name, region=engine._region(None))
     if tab_loc is None:
         return ActionResult(
             success=False,
@@ -123,10 +161,11 @@ def navigate_menu(engine: RpaEngine, items: list[str]) -> ActionResult:
     2. Repeat until all items are clicked
     """
     results = []
+    reg = engine._region(None)   # escopa ao palco
     for i, item in enumerate(items):
         before = engine.screenshot(f"menu_{i}")
 
-        item_loc = engine.vision.find_text(before, item)
+        item_loc = engine.vision.find_text(before, item, region=reg)
         if item_loc is None:
             return ActionResult(
                 success=False,
@@ -165,8 +204,9 @@ def find_in_table(
     3. Scan rows until the cell text is found
     4. Optionally click the cell
     """
+    reg = engine._region(None)   # escopa ao palco
     screenshot = engine.screenshot("table")
-    ocr_text = engine.vision.ocr(screenshot)
+    ocr_text = engine.vision.ocr(screenshot, region=reg)
 
     # Simplified: just look for the cell text within the table region
     # Full implementation would identify column positions from headers
@@ -179,7 +219,7 @@ def find_in_table(
         )
 
     # Find cell position
-    cell_loc = engine.vision.find_text(screenshot, cell_text)
+    cell_loc = engine.vision.find_text(screenshot, cell_text, region=reg)
     if cell_loc is None:
         return ActionResult(
             success=False,
@@ -217,6 +257,7 @@ def fill_form(engine: RpaEngine, fields: list[dict]) -> ActionResult:
        e. For combobox: use select_combobox
     """
     results = []
+    reg = engine._region(None)   # escopa ao palco
     for field in fields:
         label = field.get("label", "")
         value = field.get("value", "")
@@ -226,7 +267,7 @@ def fill_form(engine: RpaEngine, fields: list[dict]) -> ActionResult:
             r = select_combobox(engine, label, value)
         elif field_type == "checkbox":
             # Find label and click it (usually toggles)
-            loc = engine.vision.find_text(engine.screenshot("form_cb"), label)
+            loc = engine.vision.find_text(engine.screenshot("form_cb"), label, region=reg)
             if loc:
                 r = engine.click_at(loc["x"] - 20, loc["y"])
             else:
@@ -235,7 +276,7 @@ def fill_form(engine: RpaEngine, fields: list[dict]) -> ActionResult:
         else:
             # Text field: click label area, clear, type
             ss = engine.screenshot("form_text")
-            loc = engine.vision.find_text(ss, label)
+            loc = engine.vision.find_text(ss, label, region=reg)
             if loc:
                 # Click input area (to the right of label)
                 engine.click_at(loc["x"] + 150, loc["y"])

@@ -72,7 +72,7 @@ class RpaEngine:
         *,
         max_retries: int = 3,
         retry_delay: float = 0.5,
-        screenshot_dir: str = "/tmp",
+        screenshot_dir: str = None,   # None → tempfile.gettempdir() (cross-OS)
         verbose: bool = True,
     ):
         self.desktop = desktop
@@ -80,7 +80,9 @@ class RpaEngine:
         self.vlm = vlm
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        self.screenshot_dir = screenshot_dir
+        # /tmp não existe no Windows; tempfile.gettempdir() resolve em todo OS
+        # (TEMP no Windows, /tmp no Linux/macOS).
+        self.screenshot_dir = screenshot_dir or tempfile.gettempdir()
         self.verbose = verbose
         # Active "stage": when set, OCR/template/grounding search ONLY inside this
         # window region, so the cluttered shared desktop can't pollute matches.
@@ -90,6 +92,113 @@ class RpaEngine:
         # successfully located, keyed by their search text. When OCR later fails
         # to find the text, we re-locate by template-matching the saved crop.
         self._heal_store: dict = {}
+        # Grafo de conhecimento da UI (cache persistente, alimentado on-the-fly):
+        # aprende os estados de tela e as transições (ação→tela) conforme navega,
+        # p/ na 2ª vez consultar a rota em vez de adivinhar. Ver ui_graph.py.
+        self._ui_graph = None
+        self._ui_graph_loaded = False
+        self._ui_last_sid = None          # último estado observado
+        self._ui_pending_action = None    # ação aguardando o próximo perceive p/ virar aresta
+        self._ui_pending_menu = None      # menu recém-aberto (Expand) p/ capturar itens por OCR
+
+    def _ui_graph_get(self):
+        """Carrega o grafo de UI sob demanda (best-effort; None se indisponível)."""
+        if not self._ui_graph_loaded:
+            self._ui_graph_loaded = True
+            try:
+                from .ui_graph import UiGraph
+                self._ui_graph = UiGraph()
+            except Exception as e:
+                self._log(f"ui_graph indisponível: {e}")
+                self._ui_graph = None
+        return self._ui_graph
+
+    def learn_screen(self, analysis: str) -> dict:
+        """Aprendizado ATIVO: o agente analisou a tela atual a fundo e salva a
+        análise no grafo (object-repository). Próxima visita já vem 'conhecida'."""
+        g = self._ui_graph_get()
+        sid = self._ui_observe_current()
+        if g is None or sid is None:
+            return {"success": False, "error": "sem estado/grafo (mire uma janela primeiro)"}
+        g.set_analysis(sid, analysis)
+        g.save()
+        return {"success": True, "saved_for": (self._stage_title() or "")[:40],
+                "note": "análise salva — vou te devolver isto da próxima vez nesta tela"}
+
+    def screen_map(self, window: str = None) -> dict:
+        """Object-repository: o mapa CACHEADO da tela (controles + menus conhecidos
+        + transições), do grafo — sem re-explorar. `window` = título; default = palco."""
+        g = self._ui_graph_get()
+        if g is None:
+            return {"error": "grafo de UI indisponível"}
+        label = window or self._stage_title()
+        if not label:
+            return {"error": "sem janela-alvo (mire uma janela ou passe window=)"}
+        m = g.screen_map(label)
+        return m or {"label": label, "note": "tela ainda não mapeada — navegue que o grafo aprende"}
+
+    def _ui_observe_current(self):
+        """Observa o estado atual no grafo (dump UIA do palco) e devolve o sid."""
+        u, title, g = self._uia(), self._stage_title(), self._ui_graph_get()
+        if not (u and title and g):
+            return None
+        try:
+            vl, vt = self._vorigin()
+            dumped = u.dump(title, vleft=vl, vtop=vt)
+            actionable = [e for e in dumped if e.get("name") and e.get("patterns")]
+            sid = g.observe(title, actionable)
+            if sid:
+                self._ui_last_sid = sid
+            return sid
+        except Exception:
+            return None
+
+    def goto(self, target: str, *, click: bool = False) -> "ActionResult":
+        """Navega até a tela que CONTÉM `target` pela ROTA cacheada no grafo de UI
+        (aprendida em runs anteriores) — sem re-explorar nem adivinhar. Executa
+        cada ação da rota e re-mira a janela resultante. Se click=True, aciona o
+        alvo no fim. Rota desconhecida → falha limpa (o agente navega e o grafo
+        aprende). É o payoff: o que custou dezenas de tools na 1ª vez vira 1 chamada."""
+        g = self._ui_graph_get()
+        if g is None:
+            return ActionResult(success=False, action=f"goto:{target}",
+                                error="grafo de UI indisponível (UIA/Windows)")
+        cur = self._ui_observe_current()
+        if cur is None:
+            return ActionResult(success=False, action=f"goto:{target}",
+                                error="estado atual desconhecido — mire uma janela (rpa_target_window) primeiro")
+        steps = g.path_to(cur, target)
+        if steps is None:
+            return ActionResult(success=False, action=f"goto:{target}",
+                                error=f"rota até '{target}' ainda desconhecida — navegue manualmente que o grafo aprende")
+        executed = []
+        for s in steps:
+            act = s["action"]
+            if act.get("kind") == "click":
+                self.click_text(act["target"])
+                executed.append(act["target"])
+            lbl = s.get("to_label")
+            if lbl:
+                # PROBE estável: o título do diálogo varia (ex.: 'Ordem: EURUSD'
+                # vs 'Ordem: BTCUSD'); mira pelo prefixo até ':' (ou 2 palavras).
+                probe = (lbl.split(":")[0] + ":") if ":" in lbl else " ".join(lbl.split()[:2])
+                probe = probe[:20]
+                # ESPERA a janela resultante aparecer (a ação pode abrir um
+                # diálogo que demora ~1-2s) antes de mirar.
+                for _ in range(15):
+                    if self.desktop.find_window(probe):
+                        break
+                    time.sleep(0.2)
+                self.target_window(probe)
+                time.sleep(0.3)
+            else:
+                time.sleep(0.4)
+        details = {"target": target, "route": executed, "steps": len(steps), "via": "ui_graph"}
+        if click:
+            r = self.click_text(target)
+            details["clicked"] = r.success
+            details["clicked_at"] = r.to_dict().get("clicked_at")
+        return ActionResult(success=True, action=f"goto:{target}", details=details)
 
     # ── Stage (window targeting) ───────────────────────────
 
@@ -105,14 +214,30 @@ class RpaEngine:
             return ActionResult(success=False, action=f"target_window:{title}",
                                 error=f"Janela '{title}' não encontrada",
                                 details={"windows": names})
+        # Popup/modal bloqueando? A janela-alvo fica DESABILITADA enquanto um
+        # diálogo modal está aberto — clicar/digitar nela não tem efeito. Mira o
+        # POPUP automaticamente (é com ele que dá pra interagir) e avisa.
+        redirected = None
+        try:
+            popup = getattr(self.desktop, "blocking_popup", lambda w: None)(win)
+        except Exception:
+            popup = None
+        if popup is not None:
+            redirected = {"de": win["name"], "para": popup["name"]}
+            self._log(f"'{win['name']}' está bloqueada pelo popup '{popup['name']}' — mirando o popup")
+            win = popup
         self.desktop.activate_window(win)
         time.sleep(settle)
         geo = self.desktop.window_geometry(win)
         self.stage_window = win
         self.stage_region = geo
         self._log(f"palco = '{win['name']}' @ {geo}")
-        return ActionResult(success=True, action=f"target_window:{title}",
-                            details={"window": win["name"], "region": geo})
+        details = {"window": win["name"], "region": geo}
+        if redirected:
+            details["redirected_to_popup"] = redirected
+            details["hint"] = (f"A janela '{redirected['de']}' estava bloqueada por um "
+                               f"popup modal; mirei o popup '{redirected['para']}'. Interaja com ele.")
+        return ActionResult(success=True, action=f"target_window:{title}", details=details)
 
     def clear_stage(self):
         """Drop the active stage; searches revert to the full screen."""
@@ -129,15 +254,31 @@ class RpaEngine:
         """
         import shlex
         import subprocess
-        argv = shlex.split(command) if isinstance(command, str) else list(command)
-        if not argv:
+        # No Windows NÃO usar shlex.split: ele come as barras invertidas dos
+        # caminhos (`C:\Program Files\...` vira `C:Program`, `Files...`). O
+        # CreateProcess do Windows já faz o parse da string de comando — passamos
+        # a string crua. No POSIX, shlex.split (respeita aspas).
+        if isinstance(command, (list, tuple)):
+            argv, popen_arg = list(command), list(command)
+        elif sys.platform == "win32":
+            argv, popen_arg = [command], command          # string crua p/ CreateProcess
+        else:
+            argv = shlex.split(command); popen_arg = argv
+        if not argv or not str(argv[0]).strip():
             return ActionResult(success=False, action="launch_app", error="comando vazio")
         before = {w["id"] for w in self.desktop.list_windows()}
+        # Detach: POSIX usa start_new_session; Windows usa creationflags
+        # (DETACHED_PROCESS) — start_new_session é ignorado lá.
+        kw = {}
+        if sys.platform == "win32":
+            kw["creationflags"] = 0x00000008  # DETACHED_PROCESS
+        else:
+            kw["start_new_session"] = True
         try:
             proc = subprocess.Popen(
-                argv,
+                popen_arg,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True,
+                stderr=subprocess.DEVNULL, **kw,
             )
         except FileNotFoundError:
             return ActionResult(success=False, action="launch_app",
@@ -165,6 +306,25 @@ class RpaEngine:
     def _log(self, msg: str):
         if self.verbose:
             print(f"[rpa] {msg}", file=sys.stderr)
+
+    # ── Localizador nível 1: acessibilidade nativa (UIA, Windows) ──
+    # O "julgamento" do orquestrador: tenta a árvore de acessibilidade ANTES do
+    # OCR/sintético. Ação exata e semântica (Invoke/SetValue/Select), sem OCR nem
+    # coordenada nem foco. Indisponível (Linux/macOS/sem lib) → cai no caminho
+    # OCR sem quebrar.
+    def _uia(self):
+        try:
+            from . import uia
+            return uia if uia.available() else None
+        except Exception:
+            return None
+
+    def _stage_title(self):
+        w = self.stage_window
+        return w.get("name") if isinstance(w, dict) else None
+
+    def _vorigin(self):
+        return getattr(self.desktop, "_vleft", 0), getattr(self.desktop, "_vtop", 0)
 
     def _screenshot(self, label: str) -> str:
         path = os.path.join(
@@ -332,6 +492,54 @@ class RpaEngine:
         """
         region = self._region(region)
 
+        # Grafo de UI: marca a ação pendente; o próximo perceive vira a aresta
+        # (estado_atual --click:texto--> estado_resultante). Consumida/limpa no
+        # perceive, então um click que falha (sem mudar de tela) não cria aresta.
+        self._ui_pending_action = {"kind": "click", "target": text}
+
+        # UIA-first (Windows): acha o controle por nome na árvore (EXATO, sem OCR,
+        # sem adivinhar coordenada, independe de foco) e CLICA o rect com mouse
+        # REAL. O clique replica o usuário e ABRE menus/dropdowns — o Invoke num
+        # menu-bar do MT5 só selecionava, não abria (feedback do Tiago). Invoke
+        # fica de fallback só p/ controle sem rect on-screen (coberto/fora da tela).
+        u, title = self._uia(), self._stage_title()
+        if u and title:
+            try:
+                vl, vt = self._vorigin()
+                cp = u.click_point(title, text, vleft=vl, vtop=vt)
+                if cp:
+                    # AÇÃO por PAPEL do controle (desambiguação):
+                    #  - tem Expand (menu-bar/combo, ex.: 'Arquivo') → CLICA o rect
+                    #    (abre o dropdown; Invoke num menu-bar só seleciona).
+                    #  - tem Invoke sem expand (comando/botão, ex.: 'Nova Ordem',
+                    #    'Buy') → INVOKE (confiável; o rect pode estar velho/errado —
+                    #    foi o bug: clicava (924,143) e não abria; Invoke abre).
+                    #  - senão → clica o rect (label) se on-screen.
+                    onscreen = cp.get("x") is not None and cp["x"] >= 0 and cp["y"] >= 0
+                    method = None
+                    if cp.get("can_expand") and onscreen:
+                        self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
+                        # menu/combo abriu → próximo perceive captura os itens (OCR)
+                        self._ui_pending_menu = cp["name"]
+                    elif cp.get("can_invoke"):
+                        try:
+                            cp["_ctrl"].GetInvokePattern().Invoke(); method = "invoke"
+                        except Exception:
+                            if onscreen:
+                                self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
+                    elif onscreen:
+                        self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
+                    if method is None:
+                        raise RuntimeError("controle sem ação UIA utilizável — cai no OCR")
+                    time.sleep(0.2)
+                    return ActionResult(
+                        success=True, action=f"click_text_{text[:20]}",
+                        details={"text": text, "matched_text": cp["name"],
+                                 "clicked_at": {"x": cp["x"], "y": cp["y"]},
+                                 "via": "uia", "method": method})
+            except Exception as e:
+                self._log(f"click_text UIA falhou ({e}); fallback OCR")
+
         # a11y-first (EST-1146): se o app expõe a árvore de acessibilidade, achar
         # o elemento por nome é exato e INSTANTÂNEO (sem OCR). Só vale dentro do
         # palco (senão um botão de mesmo nome em outro app seria clicado); apps
@@ -459,9 +667,48 @@ class RpaEngine:
         result.details["description"] = description
         return result
 
-    def type_text(self, text: str) -> ActionResult:
-        """Type text at current focus."""
+    def _clear_field(self, *, n: int = 24):
+        """Limpa o campo FOCADO de forma robusta antes de digitar. Combina dois
+        métodos porque campos custom (spinbox de volume/preço do MT5) IGNORAM o
+        select-all: (1) Ctrl+A + Delete (campos padrão); (2) End + Backspace×n
+        (apaga tudo da direita p/ esquerda, cobre os spinboxes). Sem isso o
+        agente tinha que orquestrar isso na unha (frágil)."""
+        d = self.desktop
+        try:
+            d.press_key("ctrl+a"); time.sleep(0.04)
+            d.press_key("Delete"); time.sleep(0.04)
+        except Exception:
+            pass
+        try:
+            d.press_key("End"); time.sleep(0.03)
+            for _ in range(n):
+                d.press_key("backspace"); time.sleep(0.008)
+        except Exception:
+            pass
+
+    def type_text(self, text: str, *, clear: bool = False) -> ActionResult:
+        """Type text at current focus. clear=True limpa o campo antes (robusto p/
+        campos custom, ex.: preço/volume do MT5).
+
+        UIA-first SÓ com clear=True (semântica de 'setar o valor do campo'): se o
+        controle FOCADO tem Value, faz SetValue — instantâneo, exato, sem o hack
+        de backspaces. clear=False segue pelo teclado (digita no cursor, p/ não
+        sobrescrever um documento inteiro com SetValue)."""
+        if clear:
+            u = self._uia()
+            if u:
+                try:
+                    if u.set_focused_value(text):
+                        self._log("type_text via UIA SetValue (campo focado)")
+                        return ActionResult(success=True, action=f"type_{len(text)}chars",
+                                            details={"text_length": len(text), "cleared": True,
+                                                     "via": "uia"})
+                except Exception as e:
+                    self._log(f"type_text UIA falhou ({e}); fallback teclado")
+
         def do():
+            if clear:
+                self._clear_field()
             self.desktop.type_text(text)
 
         def check():
@@ -469,6 +716,7 @@ class RpaEngine:
 
         result = self.act(f"type_{len(text)}chars", do, check, verify_desc="digitar texto")
         result.details["text_length"] = len(text)
+        result.details["cleared"] = clear
         return result
 
     def press_key(self, key: str) -> ActionResult:
@@ -484,7 +732,21 @@ class RpaEngine:
         return result
 
     def scroll(self, lines: int) -> ActionResult:
-        """Scroll up (positive) or down (negative)."""
+        """Scroll up (positive) or down (negative).
+
+        UIA-first: rola o controle CERTO via ScrollPattern (o wheel sintético do
+        pyautogui rola 'o que estiver sob o cursor' — impreciso). Fallback: wheel.
+        """
+        u, title = self._uia(), self._stage_title()
+        if u and title:
+            try:
+                if u.scroll(title, lines):
+                    self._log(f"scroll {lines} via UIA (ScrollPattern)")
+                    return ActionResult(success=True, action=f"scroll_{lines}",
+                                        details={"lines": lines, "via": "uia"})
+            except Exception as e:
+                self._log(f"scroll UIA falhou ({e}); fallback wheel")
+
         def do():
             self.desktop.mouse_scroll(lines)
 

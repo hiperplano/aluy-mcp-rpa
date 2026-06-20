@@ -39,8 +39,10 @@ class VisionBackend:
         if not _HAS_PIL:
             raise RuntimeError("Pillow não instalado. pip install Pillow")
 
+        import threading
         self._ocr_reader = None
         self._ocr_loaded = False
+        self._ocr_lock = threading.Lock()  # serializa o load (warmup vs 1ª tool)
         self._ocr_gpu = ocr_gpu        # detectado: usa GPU se houver
         self._ocr_canvas = ocr_canvas  # detectado: capa o processamento p/ caber em 60s
         print(f"[rpa] Vision backend: OpenCV ok, EasyOCR={'sim' if _HAS_EASYOCR else 'não'} "
@@ -132,18 +134,26 @@ class VisionBackend:
     # ── OCR ────────────────────────────────────────────────
 
     def _ensure_ocr(self):
-        if self._ocr_loaded:
+        # Idempotente: só considera carregado se o reader REALMENTE existe.
+        # (Antes, RPA_SKIP_OCR_WARMUP=1 marcava _ocr_loaded=True sem carregar o
+        # reader → toda chamada de OCR estourava 'NoneType.readtext'. Aquele flag
+        # é só p/ pular o warm-up PROATIVO em background — ver _warm_ocr no
+        # server. O load SOB DEMANDA, quando uma tool precisa de OCR, tem de
+        # acontecer sempre, senão o motor fica cego.)
+        if self._ocr_loaded and self._ocr_reader is not None:
             return
-        if _HAS_EASYOCR:
-            os.environ.setdefault("EASYOCR_VERBOSE", "0")
-            # Permite pular o warm-up via env var (evita timeout no handshake MCP)
-            if os.environ.get("RPA_SKIP_OCR_WARMUP") == "1":
-                self._ocr_loaded = True
+        # Lock: o warmup em background e a 1ª tool podem chamar isto ao mesmo
+        # tempo — sem serializar, carregariam o EasyOCR/torch duas vezes (lento +
+        # RAM dobrada). Double-check dentro do lock.
+        with self._ocr_lock:
+            if self._ocr_loaded and self._ocr_reader is not None:
                 return
-            import easyocr  # lazy: puxa torch só aqui
-            self._ocr_reader = easyocr.Reader(["pt", "en"], gpu=self._ocr_gpu, verbose=False)
-            self._calibrate_canvas()
-        self._ocr_loaded = True
+            if _HAS_EASYOCR:
+                os.environ.setdefault("EASYOCR_VERBOSE", "0")
+                import easyocr  # lazy: puxa torch só aqui
+                self._ocr_reader = easyocr.Reader(["pt", "en"], gpu=self._ocr_gpu, verbose=False)
+                self._calibrate_canvas()
+            self._ocr_loaded = True
 
     # EST-1143: garante OCR < orçamento (nenhuma chamada estoura os 60s do MCP).
     OCR_BUDGET_S = 40.0   # margem confortável abaixo dos 60s
@@ -158,17 +168,21 @@ class VisionBackend:
             import numpy as np, time as _t
             if self._ocr_gpu:
                 return  # GPU: rápido, não precisa capar
-            # quadro denso de teste (texto repetido), ~tamanho de tela cheia
-            big = Image.new("RGB", (1920, 1080), "white")
+            # Mede numa amostra de MEIA-ALTURA (mesma largura → mesmo downscale de
+            # canvas, logo representativo) e EXTRAPOLA ×2 p/ a tela cheia. A passada
+            # de tela inteira custava ~34s nesta CPU e era paga na 1ª tool; com meia
+            # altura cai p/ ~metade sem perder o sentido do orçamento.
+            SAMPLE_H = 540
+            big = Image.new("RGB", (1920, SAMPLE_H), "white")
             from PIL import ImageDraw
             dr = ImageDraw.Draw(big)
             line = "Buy Sell 12345 OK Cancel Accept EURUSD 1.2345 menu file edit  " * 3
-            for y in range(20, 1060, 26):
+            for y in range(20, SAMPLE_H - 20, 26):
                 dr.text((10, y), line, fill="black")
             t0 = _t.time()
             self._ocr_reader.readtext(np.array(big), detail=0,
                                       canvas_size=self._ocr_canvas, mag_ratio=1.0)
-            dt = _t.time() - t0
+            dt = (_t.time() - t0) * (1080.0 / SAMPLE_H)   # extrapola p/ tela cheia
             if dt > self.OCR_BUDGET_S * 0.7:
                 import math
                 factor = math.sqrt((self.OCR_BUDGET_S * 0.7) / dt)
