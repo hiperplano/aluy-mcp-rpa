@@ -72,7 +72,7 @@ class RpaEngine:
         *,
         max_retries: int = 3,
         retry_delay: float = 0.5,
-        screenshot_dir: str = "/tmp",
+        screenshot_dir: str = None,   # None → tempfile.gettempdir() (cross-OS)
         verbose: bool = True,
     ):
         self.desktop = desktop
@@ -80,7 +80,9 @@ class RpaEngine:
         self.vlm = vlm
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        self.screenshot_dir = screenshot_dir
+        # /tmp não existe no Windows; tempfile.gettempdir() resolve em todo OS
+        # (TEMP no Windows, /tmp no Linux/macOS).
+        self.screenshot_dir = screenshot_dir or tempfile.gettempdir()
         self.verbose = verbose
         # Active "stage": when set, OCR/template/grounding search ONLY inside this
         # window region, so the cluttered shared desktop can't pollute matches.
@@ -129,15 +131,31 @@ class RpaEngine:
         """
         import shlex
         import subprocess
-        argv = shlex.split(command) if isinstance(command, str) else list(command)
-        if not argv:
+        # No Windows NÃO usar shlex.split: ele come as barras invertidas dos
+        # caminhos (`C:\Program Files\...` vira `C:Program`, `Files...`). O
+        # CreateProcess do Windows já faz o parse da string de comando — passamos
+        # a string crua. No POSIX, shlex.split (respeita aspas).
+        if isinstance(command, (list, tuple)):
+            argv, popen_arg = list(command), list(command)
+        elif sys.platform == "win32":
+            argv, popen_arg = [command], command          # string crua p/ CreateProcess
+        else:
+            argv = shlex.split(command); popen_arg = argv
+        if not argv or not str(argv[0]).strip():
             return ActionResult(success=False, action="launch_app", error="comando vazio")
         before = {w["id"] for w in self.desktop.list_windows()}
+        # Detach: POSIX usa start_new_session; Windows usa creationflags
+        # (DETACHED_PROCESS) — start_new_session é ignorado lá.
+        kw = {}
+        if sys.platform == "win32":
+            kw["creationflags"] = 0x00000008  # DETACHED_PROCESS
+        else:
+            kw["start_new_session"] = True
         try:
             proc = subprocess.Popen(
-                argv,
+                popen_arg,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True,
+                stderr=subprocess.DEVNULL, **kw,
             )
         except FileNotFoundError:
             return ActionResult(success=False, action="launch_app",

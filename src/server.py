@@ -31,12 +31,17 @@ import json
 import asyncio
 from pathlib import Path
 
-# Garante DISPLAY
-if not os.environ.get("DISPLAY"):
+# Garante DISPLAY (só no Linux/X11 — no Windows/macOS não há servidor X e a ação
+# é via PortableBackend; setar DISPLAY ali não tem efeito).
+import platform as _platform
+if _platform.system() == "Linux" and not os.environ.get("DISPLAY"):
     os.environ["DISPLAY"] = ":10"
 
-# Pula warm-up do EasyOCR (evita timeout de 120s+ no handshake MCP)
-os.environ.setdefault("RPA_SKIP_OCR_WARMUP", "1")
+# Warm-up do EasyOCR roda em BACKGROUND por padrão (carrega torch/modelo + calibra
+# logo após o boot), p/ a PRIMEIRA tool de OCR não pagar o load frio (~40s) e arriscar
+# o timeout de 60s do MCP. Medido: o handshake (initialize/list_tools) volta em ~1s
+# MESMO com o warmup rodando — ele é thread daemon e não bloqueia o handshake.
+# Para depurar/forçar load preguiçoso: exporte RPA_SKIP_OCR_WARMUP=1 antes de subir.
 
 try:
     from mcp.server import Server, NotificationOptions
@@ -631,6 +636,10 @@ Motor de RPA de tela (mouse + teclado + OCR). SIGA este playbook para não quebr
 4. ESPERE O INESPERADO. Podem surgir diálogos de confirmação/termos (ex.: "One Click Trading",
    "Accept", "OK", "Save"). Após cada ação importante, tire `rpa_screenshot`, leia o `visible_text`,
    e clique no botão certo. Se um botão não for achado, use o rótulo EXATO que aparece na lista.
+   ATENÇÃO — MODAIS SÃO OUTRA JANELA: um diálogo (ex.: "Ordem: EURUSD…", "Substituir", "Fonte")
+   abre como JANELA SEPARADA. Para interagir com ele OU fechá-lo (Escape/botão), chame
+   `rpa_target_window` com o título do MODAL primeiro — teclas/cliques mirados na janela-mãe NÃO
+   atingem o modal. Use `rpa_screenshot` para ver o título/campos e mire a janela certa.
 
 5. VERIFIQUE. Confirme o efeito lendo a tela de novo (`rpa_screenshot`) antes de declarar sucesso —
    a verificação visual interna é só uma dica (`stage_changed`), não prova que a ação surtiu efeito.

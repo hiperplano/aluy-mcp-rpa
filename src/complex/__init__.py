@@ -27,10 +27,11 @@ def select_combobox(
     3. Wait for dropdown to open
     4. Find and click the option text
     """
+    reg = engine._region(None)   # escopa OCR ao palco (senão lê a tela toda)
     label_screenshot = engine.screenshot("combobox_label")
 
     # Find label position
-    label_loc = engine.vision.find_text(label_screenshot, label_text)
+    label_loc = engine.vision.find_text(label_screenshot, label_text, region=reg)
     if label_loc is None:
         return ActionResult(
             success=False,
@@ -49,7 +50,7 @@ def select_combobox(
     dropdown_screenshot = engine.screenshot("combobox_dropdown")
 
     # Find option in dropdown
-    option_loc = engine.vision.find_text(dropdown_screenshot, option_text)
+    option_loc = engine.vision.find_text(dropdown_screenshot, option_text, region=reg)
     if option_loc is None:
         # Try pressing the option text (type to filter)
         engine.type_text(option_text)
@@ -87,7 +88,7 @@ def click_tab(engine: RpaEngine, tab_name: str) -> ActionResult:
     """
     before = engine.screenshot("tab_before")
 
-    tab_loc = engine.vision.find_text(before, tab_name)
+    tab_loc = engine.vision.find_text(before, tab_name, region=engine._region(None))
     if tab_loc is None:
         return ActionResult(
             success=False,
@@ -123,10 +124,11 @@ def navigate_menu(engine: RpaEngine, items: list[str]) -> ActionResult:
     2. Repeat until all items are clicked
     """
     results = []
+    reg = engine._region(None)   # escopa ao palco
     for i, item in enumerate(items):
         before = engine.screenshot(f"menu_{i}")
 
-        item_loc = engine.vision.find_text(before, item)
+        item_loc = engine.vision.find_text(before, item, region=reg)
         if item_loc is None:
             return ActionResult(
                 success=False,
@@ -165,8 +167,9 @@ def find_in_table(
     3. Scan rows until the cell text is found
     4. Optionally click the cell
     """
+    reg = engine._region(None)   # escopa ao palco
     screenshot = engine.screenshot("table")
-    ocr_text = engine.vision.ocr(screenshot)
+    ocr_text = engine.vision.ocr(screenshot, region=reg)
 
     # Simplified: just look for the cell text within the table region
     # Full implementation would identify column positions from headers
@@ -179,7 +182,7 @@ def find_in_table(
         )
 
     # Find cell position
-    cell_loc = engine.vision.find_text(screenshot, cell_text)
+    cell_loc = engine.vision.find_text(screenshot, cell_text, region=reg)
     if cell_loc is None:
         return ActionResult(
             success=False,
@@ -217,6 +220,7 @@ def fill_form(engine: RpaEngine, fields: list[dict]) -> ActionResult:
        e. For combobox: use select_combobox
     """
     results = []
+    reg = engine._region(None)   # escopa ao palco
     for field in fields:
         label = field.get("label", "")
         value = field.get("value", "")
@@ -226,7 +230,7 @@ def fill_form(engine: RpaEngine, fields: list[dict]) -> ActionResult:
             r = select_combobox(engine, label, value)
         elif field_type == "checkbox":
             # Find label and click it (usually toggles)
-            loc = engine.vision.find_text(engine.screenshot("form_cb"), label)
+            loc = engine.vision.find_text(engine.screenshot("form_cb"), label, region=reg)
             if loc:
                 r = engine.click_at(loc["x"] - 20, loc["y"])
             else:
@@ -235,7 +239,7 @@ def fill_form(engine: RpaEngine, fields: list[dict]) -> ActionResult:
         else:
             # Text field: click label area, clear, type
             ss = engine.screenshot("form_text")
-            loc = engine.vision.find_text(ss, label)
+            loc = engine.vision.find_text(ss, label, region=reg)
             if loc:
                 # Click input area (to the right of label)
                 engine.click_at(loc["x"] + 150, loc["y"])

@@ -18,13 +18,16 @@ def detect_backends(caps: dict = None):
             from ..capabilities import detect_capabilities, summary
             caps = detect_capabilities()
             print(summary(caps), file=sys.stderr)
-            if not caps.get("x_ok", True):
+            is_linux = caps.get("os") == "Linux"
+            # X/Wine são conceitos do Linux. No Windows/macOS a ação é via
+            # PortableBackend (não há X), então estes avisos não se aplicam.
+            if is_linux and not caps.get("x_ok", True):
                 print(f"[rpa] ERRO: servidor X não acessível em DISPLAY={caps.get('display')} "
                       "— abra um X (xrdp/Xvfb) antes. Sem X o motor não opera.", file=sys.stderr)
             if caps.get("warn_no_swap"):
                 print("[rpa] AVISO: memória baixa e SEM swap — EasyOCR/VLM podem "
                       "causar OOM. Configure swap (ver README).", file=sys.stderr)
-            if not caps.get("wine", True):
+            if is_linux and not caps.get("wine", True):
                 print("[rpa] INFO: Wine não instalado — apps Windows (ex.: MetaTrader) "
                       "não abrirão; apps nativos do Linux funcionam normalmente.", file=sys.stderr)
         except Exception as e:

@@ -16,17 +16,17 @@ import glob
 
 
 def _has_gpu() -> bool:
+    """GPU UTILIZÁVEL pelo OCR = torch consegue usar CUDA.
+
+    O EasyOCR roda sobre o torch, então só vale 'GPU' se `torch.cuda` funcionar.
+    NÃO basta haver uma placa (nvidia-smi): um build CPU-only do torch (comum no
+    Windows, `torch.version.cuda is None`) vê a placa mas roda na CPU. Confiar no
+    nvidia-smi aqui marcava gpu=True falsamente → OCR escolhia canvas 2560 e PULAVA
+    a calibração (que só roda em CPU) → OCR de tela cheia estourava o timeout do MCP.
+    """
     try:
         import torch
-        if torch.cuda.is_available():
-            return True
-    except Exception:
-        pass
-    # fallback: nvidia-smi presente e responde
-    try:
-        import subprocess
-        r = subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=4)
-        return r.returncode == 0 and b"GPU" in r.stdout
+        return bool(torch.cuda.is_available())
     except Exception:
         return False
 
@@ -85,11 +85,15 @@ def detect_capabilities(display: str = None) -> dict:
     import platform
     os_name = platform.system()  # 'Linux' | 'Windows' | 'Darwin'
     display = display or os.environ.get("DISPLAY", ":0")
+    is_linux = os_name == "Linux"
     gpu = _has_gpu()
     avail_mb, swap_mb = _mem_info()
-    xrdp = _display_is_xrdp(display)
-    x_ok = _x_reachable(display)
-    wine = _has_wine()
+    # X, xrdp e Wine só existem no Linux. No Windows/macOS a ação é via
+    # PortableBackend (pyautogui) — não há servidor X p/ checar, e marcar
+    # x_ok=False ali imprimia um "ERRO: servidor X não acessível" enganoso.
+    xrdp = _display_is_xrdp(display) if is_linux else False
+    x_ok = _x_reachable(display) if is_linux else True
+    wine = _has_wine() if is_linux else True
 
     # a11y (AT-SPI) disponível? — caminho rápido/preciso opcional (EST-1146).
     try:
@@ -115,9 +119,11 @@ def detect_capabilities(display: str = None) -> dict:
         "vlm_allowed": gpu and (avail_mb + swap_mb) >= 6000,
         # Teclado: XSendEvent no xrdp (XTest-tecla descartado); XTest senão (cobre Wine).
         "keyboard": "xsendevent" if xrdp else "xtest",
-        # Avisos de SO (o server não conserta — só sinaliza).
-        "warn_no_swap": swap_mb == 0 and avail_mb < 4096,
-        "warn_low_mem": (avail_mb + swap_mb) < 3072,
+        # Avisos de SO (o server não conserta — só sinaliza). Só no Linux: o
+        # cálculo lê /proc/meminfo, que não existe no Windows/macOS (viria 0 e
+        # dispararia um aviso de OOM falso).
+        "warn_no_swap": is_linux and swap_mb == 0 and avail_mb < 4096,
+        "warn_low_mem": is_linux and (avail_mb + swap_mb) < 3072,
     }
     return caps
 
