@@ -95,12 +95,21 @@ def detect_capabilities(display: str = None) -> dict:
     x_ok = _x_reachable(display) if is_linux else True
     wine = _has_wine() if is_linux else True
 
-    # a11y (AT-SPI) disponível? — caminho rápido/preciso opcional (EST-1146).
+    # a11y (AT-SPI, LINUX) disponível? — caminho rápido/preciso opcional (EST-1146).
     try:
         from .a11y import available as _a11y_available
         a11y = _a11y_available()
     except Exception:
         a11y = False
+
+    # UIA (UI Automation, WINDOWS) disponível? — acessibilidade nativa, o NÍVEL 1
+    # do localizador (ação exata Invoke/SetValue/Select, sem OCR). Windows-only;
+    # no Linux/macOS fica False e o orquestrador usa a11y/OCR.
+    try:
+        from .uia import available as _uia_available
+        uia = _uia_available()
+    except Exception:
+        uia = False
 
     caps = {
         "os": os_name,
@@ -110,6 +119,7 @@ def detect_capabilities(display: str = None) -> dict:
         "display": display,
         "xrdp": xrdp,
         "a11y": a11y,
+        "uia": uia,
         "x_ok": x_ok,
         "wine": wine,
         # EasyOCR: usa GPU se houver; canvas maior em GPU, capado em CPU.
@@ -130,5 +140,5 @@ def detect_capabilities(display: str = None) -> dict:
 
 def summary(caps: dict) -> str:
     return ("[rpa] capacidades: os={os} gpu={gpu} mem={mem_available_mb}MB swap={swap_mb}MB "
-            "ocr_canvas={ocr_canvas} vlm={vlm_allowed} teclado={keyboard} a11y={a11y} "
+            "ocr_canvas={ocr_canvas} vlm={vlm_allowed} teclado={keyboard} a11y={a11y} uia={uia} "
             "x_ok={x_ok} wine={wine} (display={display}, xrdp={xrdp})").format(**caps)
