@@ -212,7 +212,14 @@ class PortableBackend:
         try:
             for w in self._gw.getAllWindows():
                 try:
-                    if not w.title or w.width < 40 or w.height < 40:
+                    if not w.title:
+                        continue
+                    is_min = bool(getattr(w, "isMinimized", False))
+                    # Janela minimizada vem como -32000/-32000 e ~160x28: NÃO
+                    # filtrar por tamanho (senão o target_window não acha p/
+                    # restaurar). activate_window→_win32_foreground a restaura
+                    # (ShowWindow) e a geometria é re-lida válida depois.
+                    if not is_min and (w.width < 40 or w.height < 40):
                         continue
                     hwnd = getattr(w, "_hWnd", None)
                     if self._is_cloaked(hwnd):
