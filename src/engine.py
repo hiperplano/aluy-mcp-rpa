@@ -112,6 +112,69 @@ class RpaEngine:
                 self._ui_graph = None
         return self._ui_graph
 
+    def _ui_observe_current(self):
+        """Observa o estado atual no grafo (dump UIA do palco) e devolve o sid."""
+        u, title, g = self._uia(), self._stage_title(), self._ui_graph_get()
+        if not (u and title and g):
+            return None
+        try:
+            vl, vt = self._vorigin()
+            dumped = u.dump(title, vleft=vl, vtop=vt)
+            actionable = [e for e in dumped if e.get("name") and e.get("patterns")]
+            sid = g.observe(title, actionable)
+            if sid:
+                self._ui_last_sid = sid
+            return sid
+        except Exception:
+            return None
+
+    def goto(self, target: str, *, click: bool = False) -> "ActionResult":
+        """Navega até a tela que CONTÉM `target` pela ROTA cacheada no grafo de UI
+        (aprendida em runs anteriores) — sem re-explorar nem adivinhar. Executa
+        cada ação da rota e re-mira a janela resultante. Se click=True, aciona o
+        alvo no fim. Rota desconhecida → falha limpa (o agente navega e o grafo
+        aprende). É o payoff: o que custou dezenas de tools na 1ª vez vira 1 chamada."""
+        g = self._ui_graph_get()
+        if g is None:
+            return ActionResult(success=False, action=f"goto:{target}",
+                                error="grafo de UI indisponível (UIA/Windows)")
+        cur = self._ui_observe_current()
+        if cur is None:
+            return ActionResult(success=False, action=f"goto:{target}",
+                                error="estado atual desconhecido — mire uma janela (rpa_target_window) primeiro")
+        steps = g.path_to(cur, target)
+        if steps is None:
+            return ActionResult(success=False, action=f"goto:{target}",
+                                error=f"rota até '{target}' ainda desconhecida — navegue manualmente que o grafo aprende")
+        executed = []
+        for s in steps:
+            act = s["action"]
+            if act.get("kind") == "click":
+                self.click_text(act["target"])
+                executed.append(act["target"])
+            lbl = s.get("to_label")
+            if lbl:
+                # PROBE estável: o título do diálogo varia (ex.: 'Ordem: EURUSD'
+                # vs 'Ordem: BTCUSD'); mira pelo prefixo até ':' (ou 2 palavras).
+                probe = (lbl.split(":")[0] + ":") if ":" in lbl else " ".join(lbl.split()[:2])
+                probe = probe[:20]
+                # ESPERA a janela resultante aparecer (a ação pode abrir um
+                # diálogo que demora ~1-2s) antes de mirar.
+                for _ in range(15):
+                    if self.desktop.find_window(probe):
+                        break
+                    time.sleep(0.2)
+                self.target_window(probe)
+                time.sleep(0.3)
+            else:
+                time.sleep(0.4)
+        details = {"target": target, "route": executed, "steps": len(steps), "via": "ui_graph"}
+        if click:
+            r = self.click_text(target)
+            details["clicked"] = r.success
+            details["clicked_at"] = r.to_dict().get("clicked_at")
+        return ActionResult(success=True, action=f"goto:{target}", details=details)
+
     # ── Stage (window targeting) ───────────────────────────
 
     def target_window(self, title: str, *, settle: float = 0.6) -> ActionResult:

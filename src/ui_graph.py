@@ -17,6 +17,7 @@ no agente; aqui Python no MCP server) → reusa-se o MODELO, não o código.
 Best-effort: nunca levanta — falha de I/O degrada para grafo vazio/sem cache.
 """
 import os
+import re
 import sys
 import json
 import time
@@ -26,14 +27,25 @@ from collections import deque
 DEFAULT_MAX_STATES = 600
 
 
-def _signature(controls) -> str:
-    """Assinatura ESTÁVEL do estado = hash do conjunto ordenado de 'nome|tipo' dos
-    controles acionáveis. Define 'que tela é esta' — robusto a coordenadas, a
-    números voláteis do título e à ordem. Telas com controles diferentes (ex.:
-    ordem em modo Mercado vs Limit) viram estados distintos, como deve ser."""
-    keys = sorted({f"{(c.get('name') or '').strip()}|{c.get('type','')}"
-                   for c in controls if (c.get('name') or '').strip()})
-    return hashlib.sha1("\n".join(keys).encode("utf-8")).hexdigest()[:16]
+def _norm_label(label: str) -> str:
+    """Normaliza o título da janela para a IDENTIDADE ESTÁVEL da tela: tira o
+    sufixo do gráfico ativo do MT5 (' - EURUSD,H1'), mascara números (conta/preço)
+    e fica só com letras. Assim a janela principal é UM nó, não um por gráfico/
+    cotação (o conjunto volátil de controles — abas, colunas — fragmentava demais)."""
+    s = re.sub(r"\s*-\s*[A-Za-z0-9]+,[A-Za-z0-9]+\s*$", "", (label or "").strip())
+    s = re.sub(r"\d+", "", s.lower())
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z]+", " ", s)).strip()[:80]
+
+
+def _signature(label: str, controls) -> str:
+    """Assinatura do estado. Primário: título normalizado (identidade estável da
+    janela). Sem título: cai no hash do conjunto de controles acionáveis."""
+    base = _norm_label(label)
+    if not base:
+        keys = sorted({f"{(c.get('name') or '').strip()}|{c.get('type','')}"
+                       for c in controls if (c.get('name') or '').strip()})
+        base = "ctrls:" + "\n".join(keys)
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
 
 
 def _norm_controls(controls):
@@ -62,7 +74,7 @@ class UiGraph:
         ctrls = _norm_controls(controls)
         if not ctrls:
             return None
-        sid = _signature(ctrls)
+        sid = _signature(label, ctrls)
         now = time.time()
         st = self.states.get(sid)
         if st:
@@ -109,8 +121,9 @@ class UiGraph:
 
     def path_to(self, from_sid: str, target_control: str, *, max_depth: int = 10):
         """BFS de `from_sid` até um estado que CONTÉM `target_control`. Devolve a
-        lista de ações (cada uma {kind,target}) do caminho, ou None se desconhecido.
-        Cycle-safe via `seen` (grafo de UI pode ter ciclos A->B->A)."""
+        lista de PASSOS [{action:{kind,target}, to_label}] do caminho (to_label =
+        título da janela resultante, p/ re-mirar), ou None se desconhecido. Lista
+        vazia = já estamos lá. Cycle-safe via `seen` (UI pode ter ciclos A->B->A)."""
         targets = set(self.states_with_control(target_control))
         if not targets:
             return None
@@ -124,7 +137,9 @@ class UiGraph:
                 continue
             for e in self.edges.get(sid, {}).values():
                 to = e["to"]
-                npath = path + [e["action"]]
+                step = {"action": e["action"],
+                        "to_label": (self.states.get(to, {}).get("label") or "")}
+                npath = path + [step]
                 if to in targets:
                     return npath
                 if to not in seen:

@@ -419,6 +419,23 @@ TOOLS = [
         },
     ),
     Tool(
+        name="rpa_goto",
+        description=(
+            "Navega até a tela que contém um controle ALVO usando a ROTA já APRENDIDA "
+            "(grafo de UI cacheado de execuções anteriores) — rápido e sem adivinhar. "
+            "Ex.: rpa_goto('Buy a mercado') executa sozinho 'clicar Nova Ordem' etc. até "
+            "chegar lá. click=true também aciona o alvo no fim. Se a rota ainda não foi "
+            "aprendida, retorna erro — aí navegue manualmente (o grafo aprende sozinho)."),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Nome do controle-alvo (ex.: 'Buy a mercado')."},
+                "click": {"type": "boolean", "description": "true = também clica o alvo ao chegar. Default: false (só navega)."},
+            },
+            "required": ["target"],
+        },
+    ),
+    Tool(
         name="rpa_target_window",
         description=(
             "Define a JANELA-ALVO (o 'palco'). Eleva/foca a janela cujo título "
@@ -559,6 +576,10 @@ async def handle_call(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "rpa_target_window":
             r = engine.target_window(arguments["title"])
+            return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
+
+        elif name == "rpa_goto":
+            r = engine.goto(arguments["target"], click=bool(arguments.get("click")))
             return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
 
         elif name == "rpa_click_describe":
