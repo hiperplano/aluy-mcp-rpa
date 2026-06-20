@@ -4,21 +4,30 @@ name: CI
 # os backends nativos (Xlib, pyautogui, uiautomation), então NÃO roda headless.
 # Este pipeline afirma só o que é de fato verificável no runner:
 #   - lint de ERROS reais (ruff: pyflakes + syntax), sem ruído de estilo;
-#   - sintaxe de todo o código (py_compile);
+#   - sintaxe de todo o código (compileall);
 #   - smoke test dos módulos PUROS (stdlib): grafo de UI, degradação do UIA fora
 #     do Windows, e detecção de capacidades.
 # O que precisa de display fica como validação manual (scripts/validate_*.py).
+#
+# Roda num SELF-HOSTED runner Windows (a org não tem Actions hospedado). O shell
+# padrão no Windows é PowerShell; fixamos `powershell` (5.1, sempre presente) p/
+# não depender de `pwsh` 7 nem de bash, que podem faltar num runner novo.
 
 on:
   push:
     branches: [main]
   pull_request:
 
+defaults:
+  run:
+    shell: powershell
+
 jobs:
   static:
     name: Lint + sintaxe + smoke
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, windows, x64]
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
@@ -33,10 +42,10 @@ jobs:
         run: python -m pip install --upgrade pip ruff pytest
 
       - name: Ruff (só erros reais — sem estilo)
-        run: ruff check --select E9,F63,F7,F82 src scripts
+        run: python -m ruff check --select E9,F63,F7,F82 src scripts
 
-      - name: Sintaxe (py_compile de tudo)
-        run: python -m py_compile $(git ls-files '*.py')
+      - name: Sintaxe (compileall de tudo)
+        run: python -m compileall -q src scripts tests
 
       - name: Smoke test (módulos puros, sem display)
-        run: pytest -q tests
+        run: python -m pytest -q tests
