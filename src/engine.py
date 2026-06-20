@@ -92,6 +92,25 @@ class RpaEngine:
         # successfully located, keyed by their search text. When OCR later fails
         # to find the text, we re-locate by template-matching the saved crop.
         self._heal_store: dict = {}
+        # Grafo de conhecimento da UI (cache persistente, alimentado on-the-fly):
+        # aprende os estados de tela e as transições (ação→tela) conforme navega,
+        # p/ na 2ª vez consultar a rota em vez de adivinhar. Ver ui_graph.py.
+        self._ui_graph = None
+        self._ui_graph_loaded = False
+        self._ui_last_sid = None          # último estado observado
+        self._ui_pending_action = None    # ação aguardando o próximo perceive p/ virar aresta
+
+    def _ui_graph_get(self):
+        """Carrega o grafo de UI sob demanda (best-effort; None se indisponível)."""
+        if not self._ui_graph_loaded:
+            self._ui_graph_loaded = True
+            try:
+                from .ui_graph import UiGraph
+                self._ui_graph = UiGraph()
+            except Exception as e:
+                self._log(f"ui_graph indisponível: {e}")
+                self._ui_graph = None
+        return self._ui_graph
 
     # ── Stage (window targeting) ───────────────────────────
 
@@ -384,6 +403,11 @@ class RpaEngine:
         The agent can assert the outcome separately (OCR/read of expected state).
         """
         region = self._region(region)
+
+        # Grafo de UI: marca a ação pendente; o próximo perceive vira a aresta
+        # (estado_atual --click:texto--> estado_resultante). Consumida/limpa no
+        # perceive, então um click que falha (sem mudar de tela) não cria aresta.
+        self._ui_pending_action = {"kind": "click", "target": text}
 
         # UIA-first (Windows): acha o controle por nome na árvore (EXATO, sem OCR,
         # sem adivinhar coordenada, independe de foco) e CLICA o rect com mouse

@@ -470,12 +470,14 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
     # não estava à frente). É isto que o agente deve preferir; o OCR vira fallback
     # p/ texto custom-desenhado fora da árvore.
     ui_elements = []
+    dumped = []
     try:
         from . import uia as _uia
         stage_title = engine.stage_window.get("name") if isinstance(engine.stage_window, dict) else None
         if _uia.available() and stage_title and not full:
             vl, vt = getattr(engine.desktop, "_vleft", 0), getattr(engine.desktop, "_vtop", 0)
-            for e in _uia.dump(stage_title, maxd=10, limit=200, vleft=vl, vtop=vt):
+            dumped = _uia.dump(stage_title, maxd=10, limit=200, vleft=vl, vtop=vt)
+            for e in dumped:
                 if not (e.get("name") and e.get("patterns") and e.get("rect")):
                     continue
                 r = e["rect"]
@@ -484,6 +486,27 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
                     f"@({r['cx']},{r['cy']}) [{','.join(e['patterns'])}]")
     except Exception as e:
         print(f"[rpa] perceive UIA falhou: {e}", file=sys.stderr)
+
+    # GRAFO DE UI (aprende dirigindo): observa o estado atual pelos controles e,
+    # se havia uma ação pendente (ex.: click "Nova Ordem") que mudou de tela,
+    # grava a aresta estado_anterior --ação--> estado_atual. Na 2ª vez o agente
+    # consulta a rota (rpa_goto) em vez de adivinhar. Best-effort.
+    actionable = [e for e in dumped if e.get("name") and e.get("patterns")]
+    if actionable:
+        try:
+            g = engine._ui_graph_get()
+            if g is not None:
+                stage_title = engine.stage_window.get("name") if isinstance(engine.stage_window, dict) else ""
+                sid = g.observe(stage_title, actionable)
+                pend = engine._ui_pending_action
+                if pend and engine._ui_last_sid and sid and sid != engine._ui_last_sid:
+                    g.record_transition(engine._ui_last_sid, pend, sid)
+                if sid:
+                    engine._ui_last_sid = sid
+                engine._ui_pending_action = None
+                g.save()
+        except Exception as e:
+            print(f"[rpa] ui_graph feed falhou: {e}", file=sys.stderr)
 
     meta = {
         "scope": "stage" if scoped else "full",

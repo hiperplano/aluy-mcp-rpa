@@ -1,0 +1,181 @@
+"""Grafo de conhecimento da UI — cache PERSISTENTE, alimentado ON-THE-FLY.
+
+Ideia: em vez de o agente re-descobrir cada tela e adivinhar caminhos, a PRÓPRIA
+ferramenta mantém um grafo da aplicação que cresce conforme navega:
+  - NÓ    = estado de tela (assinatura do conjunto de controles acionáveis) + os
+            controles daquela tela (nome/tipo/ação).
+  - ARESTA = transição rotulada por AÇÃO: (estado, ação) -> estado'.
+Na 1ª vez o motor explora e ALIMENTA o grafo; na 2ª vez ele CONSULTA a rota
+(path-find) e vai direto — rápido e sem chutar. Persiste em disco (cache de base).
+
+Reusa os padrões provados do ContextGraph do Maestro (aluy-vau, TypeScript): upsert
+idempotente, teto anti-runaway + eviction por frequência/recência, e travessia
+cycle-safe (visited). DIFERE em: arestas rotuladas por AÇÃO (não containment) e
+PERSISTÊNCIA (o ContextGraph é em memória). Processos/linguagens distintos (lá TS
+no agente; aqui Python no MCP server) → reusa-se o MODELO, não o código.
+
+Best-effort: nunca levanta — falha de I/O degrada para grafo vazio/sem cache.
+"""
+import os
+import sys
+import json
+import time
+import hashlib
+from collections import deque
+
+DEFAULT_MAX_STATES = 600
+
+
+def _signature(controls) -> str:
+    """Assinatura ESTÁVEL do estado = hash do conjunto ordenado de 'nome|tipo' dos
+    controles acionáveis. Define 'que tela é esta' — robusto a coordenadas, a
+    números voláteis do título e à ordem. Telas com controles diferentes (ex.:
+    ordem em modo Mercado vs Limit) viram estados distintos, como deve ser."""
+    keys = sorted({f"{(c.get('name') or '').strip()}|{c.get('type','')}"
+                   for c in controls if (c.get('name') or '').strip()})
+    return hashlib.sha1("\n".join(keys).encode("utf-8")).hexdigest()[:16]
+
+
+def _norm_controls(controls):
+    out = []
+    for c in controls:
+        nm = (c.get("name") or "").strip()
+        if not nm:
+            continue
+        out.append({"name": nm, "type": c.get("type", ""),
+                    "patterns": list(c.get("patterns", []))})
+    return out
+
+
+class UiGraph:
+    def __init__(self, path: str = None, *, max_states: int = DEFAULT_MAX_STATES):
+        self.path = path or os.path.join(os.path.expanduser("~/.aluy"), "rpa_ui_graph.json")
+        self.max_states = max_states
+        self.states = {}   # sid -> {id,label,controls:[...],created,seen,count}
+        self.edges = {}    # sid -> { akey -> {action:{kind,target}, to, count, seen} }
+        self._dirty = False
+        self._load()
+
+    # ── alimentação (aprende dirigindo) ──────────────────────
+    def observe(self, label: str, controls) -> str:
+        """Registra/atualiza o estado atual (idempotente) e devolve seu id."""
+        ctrls = _norm_controls(controls)
+        if not ctrls:
+            return None
+        sid = _signature(ctrls)
+        now = time.time()
+        st = self.states.get(sid)
+        if st:
+            st["seen"] = now
+            st["count"] += 1
+            if label:
+                st["label"] = label
+            st["controls"] = ctrls  # UI pode ter mudado rótulos; mantém o atual
+        else:
+            if len(self.states) >= self.max_states:
+                self._evict_one()
+            self.states[sid] = {"id": sid, "label": label or "", "created": now,
+                                "seen": now, "count": 1, "controls": ctrls}
+        self._dirty = True
+        return sid
+
+    def record_transition(self, from_sid: str, action: dict, to_sid: str):
+        """Grava aresta (from, ação) -> to. action = {kind, target}."""
+        if not from_sid or not to_sid or from_sid == to_sid:
+            return
+        akey = f"{action.get('kind')}:{action.get('target')}"
+        d = self.edges.setdefault(from_sid, {})
+        now = time.time()
+        e = d.get(akey)
+        if e:
+            e["count"] += 1
+            e["seen"] = now
+            e["to"] = to_sid
+        else:
+            d[akey] = {"action": action, "to": to_sid, "count": 1, "seen": now}
+        self._dirty = True
+
+    # ── consulta / path-find ─────────────────────────────────
+    def states_with_control(self, name: str):
+        nl = name.strip().lower()
+        out = []
+        for sid, st in self.states.items():
+            for c in st["controls"]:
+                cn = (c.get("name") or "").lower()
+                if cn == nl or nl in cn:
+                    out.append(sid)
+                    break
+        return out
+
+    def path_to(self, from_sid: str, target_control: str, *, max_depth: int = 10):
+        """BFS de `from_sid` até um estado que CONTÉM `target_control`. Devolve a
+        lista de ações (cada uma {kind,target}) do caminho, ou None se desconhecido.
+        Cycle-safe via `seen` (grafo de UI pode ter ciclos A->B->A)."""
+        targets = set(self.states_with_control(target_control))
+        if not targets:
+            return None
+        if from_sid in targets:
+            return []  # já estamos num estado que tem o controle
+        q = deque([(from_sid, [])])
+        seen = {from_sid}
+        while q:
+            sid, path = q.popleft()
+            if len(path) >= max_depth:
+                continue
+            for e in self.edges.get(sid, {}).values():
+                to = e["to"]
+                npath = path + [e["action"]]
+                if to in targets:
+                    return npath
+                if to not in seen:
+                    seen.add(to)
+                    q.append((to, npath))
+        return None
+
+    def transitions_from(self, sid: str):
+        """Ações conhecidas a partir de um estado (p/ o agente saber 'o que dá pra
+        fazer aqui' sem re-explorar)."""
+        return [{"action": e["action"], "to": e["to"], "count": e["count"]}
+                for e in self.edges.get(sid, {}).values()]
+
+    # ── eviction (teto anti-runaway; frequência+recência) ────
+    def _evict_one(self):
+        if not self.states:
+            return
+        victim = min(self.states.values(), key=lambda s: (s["count"], s["seen"]))
+        sid = victim["id"]
+        self.states.pop(sid, None)
+        self.edges.pop(sid, None)
+        for d in self.edges.values():
+            for k in [k for k, e in d.items() if e["to"] == sid]:
+                d.pop(k, None)
+
+    # ── persistência (o ponto: cache de base entre execuções) ─
+    def save(self):
+        if not self._dirty:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "states": self.states, "edges": self.edges},
+                          f, ensure_ascii=False)
+            os.replace(tmp, self.path)
+            self._dirty = False
+        except Exception as e:
+            print(f"[rpa] ui_graph save falhou: {e}", file=sys.stderr)
+
+    def _load(self):
+        try:
+            if os.path.exists(self.path):
+                with open(self.path, encoding="utf-8") as f:
+                    d = json.load(f)
+                self.states = d.get("states", {})
+                self.edges = d.get("edges", {})
+        except Exception as e:
+            print(f"[rpa] ui_graph load falhou: {e}", file=sys.stderr)
+
+    def stats(self) -> dict:
+        return {"states": len(self.states),
+                "edges": sum(len(d) for d in self.edges.values()),
+                "path": self.path}
