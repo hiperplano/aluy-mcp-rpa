@@ -200,6 +200,25 @@ class RpaEngine:
         if self.verbose:
             print(f"[rpa] {msg}", file=sys.stderr)
 
+    # ── Localizador nível 1: acessibilidade nativa (UIA, Windows) ──
+    # O "julgamento" do orquestrador: tenta a árvore de acessibilidade ANTES do
+    # OCR/sintético. Ação exata e semântica (Invoke/SetValue/Select), sem OCR nem
+    # coordenada nem foco. Indisponível (Linux/macOS/sem lib) → cai no caminho
+    # OCR sem quebrar.
+    def _uia(self):
+        try:
+            from . import uia
+            return uia if uia.available() else None
+        except Exception:
+            return None
+
+    def _stage_title(self):
+        w = self.stage_window
+        return w.get("name") if isinstance(w, dict) else None
+
+    def _vorigin(self):
+        return getattr(self.desktop, "_vleft", 0), getattr(self.desktop, "_vtop", 0)
+
     def _screenshot(self, label: str) -> str:
         path = os.path.join(
             self.screenshot_dir,
@@ -366,6 +385,32 @@ class RpaEngine:
         """
         region = self._region(region)
 
+        # UIA-first (Windows): acha o controle por nome na árvore e age NATIVO —
+        # Invoke (botão/menu/item) ou clique no rect EXATO (label). Sem OCR, sem
+        # coordenada adivinhada, sem depender de foco. Resolve o que doía no MT5.
+        u, title = self._uia(), self._stage_title()
+        if u and title:
+            try:
+                vl, vt = self._vorigin()
+                cp = u.click_point(title, text, vleft=vl, vtop=vt)
+                if cp:
+                    invoked = False
+                    if cp["can_invoke"]:
+                        try:
+                            cp["_ctrl"].GetInvokePattern().Invoke(); invoked = True
+                        except Exception:
+                            invoked = False
+                    if not invoked:
+                        self.desktop.mouse_click(cp["x"], cp["y"])
+                    time.sleep(0.2)
+                    return ActionResult(
+                        success=True, action=f"click_text_{text[:20]}",
+                        details={"text": text, "matched_text": cp["name"],
+                                 "clicked_at": {"x": cp["x"], "y": cp["y"]},
+                                 "via": "uia", "method": "invoke" if invoked else "click_rect"})
+            except Exception as e:
+                self._log(f"click_text UIA falhou ({e}); fallback OCR")
+
         # a11y-first (EST-1146): se o app expõe a árvore de acessibilidade, achar
         # o elemento por nome é exato e INSTANTÂNEO (sem OCR). Só vale dentro do
         # palco (senão um botão de mesmo nome em outro app seria clicado); apps
@@ -514,7 +559,24 @@ class RpaEngine:
 
     def type_text(self, text: str, *, clear: bool = False) -> ActionResult:
         """Type text at current focus. clear=True limpa o campo antes (robusto p/
-        campos custom, ex.: preço/volume do MT5)."""
+        campos custom, ex.: preço/volume do MT5).
+
+        UIA-first SÓ com clear=True (semântica de 'setar o valor do campo'): se o
+        controle FOCADO tem Value, faz SetValue — instantâneo, exato, sem o hack
+        de backspaces. clear=False segue pelo teclado (digita no cursor, p/ não
+        sobrescrever um documento inteiro com SetValue)."""
+        if clear:
+            u = self._uia()
+            if u:
+                try:
+                    if u.set_focused_value(text):
+                        self._log("type_text via UIA SetValue (campo focado)")
+                        return ActionResult(success=True, action=f"type_{len(text)}chars",
+                                            details={"text_length": len(text), "cleared": True,
+                                                     "via": "uia"})
+                except Exception as e:
+                    self._log(f"type_text UIA falhou ({e}); fallback teclado")
+
         def do():
             if clear:
                 self._clear_field()
@@ -541,7 +603,21 @@ class RpaEngine:
         return result
 
     def scroll(self, lines: int) -> ActionResult:
-        """Scroll up (positive) or down (negative)."""
+        """Scroll up (positive) or down (negative).
+
+        UIA-first: rola o controle CERTO via ScrollPattern (o wheel sintético do
+        pyautogui rola 'o que estiver sob o cursor' — impreciso). Fallback: wheel.
+        """
+        u, title = self._uia(), self._stage_title()
+        if u and title:
+            try:
+                if u.scroll(title, lines):
+                    self._log(f"scroll {lines} via UIA (ScrollPattern)")
+                    return ActionResult(success=True, action=f"scroll_{lines}",
+                                        details={"lines": lines, "via": "uia"})
+            except Exception as e:
+                self._log(f"scroll UIA falhou ({e}); fallback wheel")
+
         def do():
             self.desktop.mouse_scroll(lines)
 

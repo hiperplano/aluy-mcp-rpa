@@ -54,6 +54,7 @@ _PATTERNS = [
     ("selitem", "GetSelectionItemPattern"),  # Select — item de lista/aba/radio
     ("expand", "GetExpandCollapsePattern"),  # Expand — combos
     ("toggle", "GetTogglePattern"),       # Toggle — checkbox
+    ("scroll", "GetScrollPattern"),       # Scroll — listas/painéis/documentos
 ]
 
 
@@ -185,6 +186,101 @@ def set_value(title, name, value, *, control_type="Edit") -> bool:
             return True
     except Exception as e:
         print(f"[rpa] uia.set_value falhou: {e}", file=sys.stderr)
+    return False
+
+
+def click_point(title, name, *, control_type=None, vleft=0, vtop=0):
+    """Localiza um controle por nome e devolve o ponto de clique (centro do rect
+    real) + se tem Invoke. O orquestrador usa: tem Invoke → invoke(); senão clica
+    o ponto. É o caminho UIA do click_text (exato, sem OCR)."""
+    el = find(title, name, control_type=control_type, vleft=vleft, vtop=vtop)
+    if not el or not el.get("rect"):
+        return None
+    r = el["rect"]
+    return {"x": r["cx"], "y": r["cy"], "name": el["name"],
+            "can_invoke": "invoke" in el["patterns"], "_ctrl": el["_ctrl"]}
+
+
+def _find_scrollable(title):
+    """Melhor controle VERTICALMENTE rolável da janela (maior área = o conteúdo
+    principal)."""
+    if not available():
+        return None
+    try:
+        wins = _windows(title)
+        best = [None, -1]
+        n = [0]
+
+        def walk(c, depth):
+            if depth > 8 or n[0] > 400:
+                return
+            n[0] += 1
+            try:
+                sp = c.GetScrollPattern()
+                if sp:
+                    try:
+                        vert = sp.VerticallyScrollable
+                    except Exception:
+                        vert = True
+                    if vert:
+                        r = c.BoundingRectangle
+                        a = int(r.width()) * int(r.height())
+                        if a > best[1]:
+                            best[0], best[1] = c, a
+                for ch in c.GetChildren():
+                    walk(ch, depth + 1)
+            except Exception:
+                pass
+
+        for w in wins:
+            walk(w, 0)
+        return best[0]
+    except Exception:
+        return None
+
+
+def scroll(title, lines) -> bool:
+    """Rola o controle rolável da janela via ScrollPattern — rola o controle
+    CERTO, não 'o que estiver sob o cursor' (problema do wheel do pyautogui).
+    lines>0 = cima, <0 = baixo. Best-effort; False se não houver rolável."""
+    if not available():
+        return False
+    auto = _auto()
+    c = _find_scrollable(title)
+    if not c:
+        return False
+    try:
+        sp = c.GetScrollPattern()
+        # Increment = em direção ao fim (baixo); Decrement = início (cima).
+        amount = auto.ScrollAmount.SmallDecrement if lines > 0 else auto.ScrollAmount.SmallIncrement
+        for _ in range(min(abs(int(lines)), 60)):
+            sp.Scroll(auto.ScrollAmount.NoAmount, amount)
+        return True
+    except Exception as e:
+        print(f"[rpa] uia.scroll falhou: {e}", file=sys.stderr)
+        return False
+
+
+def set_focused_value(value) -> bool:
+    """Se o controle FOCADO for um campo com Value (Edit), SetValue direto — sem
+    teclado. Caminho UIA do type_text quando há um campo sob foco."""
+    if not available():
+        return False
+    auto = _auto()
+    try:
+        c = auto.GetFocusedControl()
+        if c:
+            vp = c.GetValuePattern()
+            if vp:
+                try:
+                    if vp.IsReadOnly:
+                        return False
+                except Exception:
+                    pass
+                vp.SetValue(str(value))
+                return True
+    except Exception as e:
+        print(f"[rpa] uia.set_focused_value falhou: {e}", file=sys.stderr)
     return False
 
 
