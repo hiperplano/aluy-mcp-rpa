@@ -27,6 +27,7 @@ Todas as ações têm:
 
 import os
 import sys
+import time
 import json
 import asyncio
 from pathlib import Path
@@ -97,6 +98,11 @@ def _warm_ocr():
     if os.environ.get("RPA_SKIP_OCR_WARMUP") == "1":
         print("[rpa] EasyOCR warm-up pulado (RPA_SKIP_OCR_WARMUP=1)", file=sys.stderr)
         return
+    # ATRASA o warm-up: carregar o modelo OCR (torch/CUDA) segura o GIL e disputa o
+    # contexto CUDA com a PRIMEIRA chamada de tool (que paga a init do CUDA no
+    # detect_backends ~10s) — a soma estourava o timeout de 60s do MCP no aluy.
+    # Dando uns segundos, a 1ª chamada termina primeiro; o warm-up carrega depois.
+    time.sleep(15)
     try:
         get_engine().vision._ensure_ocr()
         print("[rpa] EasyOCR pré-aquecido", file=sys.stderr)
@@ -483,18 +489,9 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
     import base64
     from io import BytesIO
     from PIL import Image
-    path = engine.screenshot()
-    img = Image.open(path)
     reg = engine.stage_region
     scoped = bool(reg and not full)
     region = reg if scoped else None
-    # OCR text — THIS is what a text-only agent reads.
-    try:
-        tokens = engine.vision.ocr_tokens(path, region=region)
-    except Exception as e:
-        tokens = []
-    if scoped:
-        img = img.crop((reg["x"], reg["y"], reg["x"] + reg["width"], reg["y"] + reg["height"]))
     # PERCEÇÃO NÍVEL 1 (UIA, Windows): lê a ÁRVORE de acessibilidade da janela-palco
     # — controles com NOME, TIPO, ação (invoke/value/...) e ponto de clique EXATO,
     # independente de foco/z-order/clutter (o OCR lia a janela errada quando o alvo
@@ -507,7 +504,7 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
         stage_title = engine.stage_window.get("name") if isinstance(engine.stage_window, dict) else None
         if _uia.available() and stage_title and not full:
             vl, vt = getattr(engine.desktop, "_vleft", 0), getattr(engine.desktop, "_vtop", 0)
-            dumped = _uia.dump(stage_title, maxd=10, limit=200, vleft=vl, vtop=vt)
+            dumped = _uia.dump(stage_title, maxd=7, limit=160, vleft=vl, vtop=vt)
             for e in dumped:
                 if not (e.get("name") and e.get("patterns") and e.get("rect")):
                     continue
@@ -561,13 +558,34 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
         except Exception as e:
             print(f"[rpa] ui_graph feed falhou: {e}", file=sys.stderr)
 
+    # OCR é o caro (~8s). Só roda quando a UIA NÃO basta (poucos controles → tela
+    # custom-desenhada, ex.: gráfico do MT5) ou full=True. Em janela UIA-rica
+    # (diálogos/apps padrão) PULA o OCR → perceive bem mais rápido. O screenshot
+    # ainda é tirado se pediram image=true.
+    do_ocr = full or (len(ui_elements) < 5)
+    need_shot = do_ocr or with_image
+    tokens, img, path = [], None, None
+    if need_shot:
+        path = engine.screenshot()
+        img = Image.open(path)
+        if do_ocr:
+            try:
+                tokens = engine.vision.ocr_tokens(path, region=region)
+            except Exception:
+                tokens = []
+        if scoped:
+            img = img.crop((reg["x"], reg["y"], reg["x"] + reg["width"], reg["y"] + reg["height"]))
+
     meta = {
         "scope": "stage" if scoped else "full",
-        "size": list(img.size),
         "visible_text": [f"{t['text']} @({t['x']},{t['y']})" for t in tokens],
         "hint": "Texto visível na tela com pontos de clique. Use rpa_click_text(<texto>) "
                 "ou rpa_click_at(x,y). Se vazio, chame rpa_target_window primeiro.",
     }
+    if img is not None:
+        meta["size"] = list(img.size)
+    if not do_ocr:
+        meta["ocr"] = "pulado (UIA suficiente) — use ui_elements; peça full=true se precisar do texto OCR."
     if ui_elements:
         meta["ui_elements"] = ui_elements
         meta["hint"] = ("PREFIRA `ui_elements`: são os controles reais (acessibilidade UIA) "
@@ -590,15 +608,16 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
     if extra:
         meta.update(extra)
     content = [TextContent(type="text", text=json.dumps(meta, ensure_ascii=False))]
-    if with_image:
+    if with_image and img is not None:
         buf = BytesIO(); img.convert("RGB").save(buf, format="PNG")
         content.append(ImageContent(type="image",
                                     data=base64.b64encode(buf.getvalue()).decode(),
                                     mimeType="image/png"))
-    try:
-        os.unlink(path)
-    except Exception:
-        pass
+    if path:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
     return content
 
 
