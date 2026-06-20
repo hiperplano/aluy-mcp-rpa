@@ -436,6 +436,20 @@ TOOLS = [
         },
     ),
     Tool(
+        name="rpa_screen_map",
+        description=(
+            "Devolve o MAPA CACHEADO da tela (object-repository aprendido): controles "
+            "por tipo + menus já descobertos (ex.: itens de 'Arquivo') + transições "
+            "conhecidas (que ação leva a que tela). É 'o que sei desta tela' sem "
+            "re-explorar — útil pra planejar antes de agir. window = título; default = palco."),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "window": {"type": "string", "description": "Título da janela (default: o palco atual)."},
+            },
+        },
+    ),
+    Tool(
         name="rpa_target_window",
         description=(
             "Define a JANELA-ALVO (o 'palco'). Eleva/foca a janela cujo título "
@@ -514,10 +528,32 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
             g = engine._ui_graph_get()
             if g is not None:
                 stage_title = engine.stage_window.get("name") if isinstance(engine.stage_window, dict) else ""
+                # Baseline de MenuItems do nó ANTES do observe sobrescrever — p/
+                # capturar o delta (itens do submenu que abriu) de forma LIMPA pela
+                # UIA (quando o menu abre, os itens viram MenuItems na árvore).
+                prev_mi = set()
+                if engine._ui_pending_menu and engine._ui_last_sid:
+                    prev_mi = {c.get("name") for c in
+                               g.states.get(engine._ui_last_sid, {}).get("controls", [])
+                               if c.get("type") == "MenuItemControl"}
                 sid = g.observe(stage_title, actionable)
                 pend = engine._ui_pending_action
                 if pend and engine._ui_last_sid and sid and sid != engine._ui_last_sid:
                     g.record_transition(engine._ui_last_sid, pend, sid)
+                # OBJECT-REPOSITORY: se um menu acabou de abrir (Expand), captura os
+                # itens dele por OCR (menus são custom-desenhados, fora da árvore) —
+                # os rótulos OCR que NÃO são controles UIA conhecidos = itens do menu.
+                if engine._ui_pending_menu and sid:
+                    # Itens do menu = os MenuItems UIA que APARECERAM ao abrir (delta
+                    # vs baseline) — nomes LIMPOS e exatos. Só captura se a UIA expõe
+                    # o dropdown (apps padrão, ex.: Notepad); menus CUSTOM (MT5) não
+                    # expõem → não captura (melhor que ruído de OCR da tela toda).
+                    cur_mi = [c.get("name") for c in actionable
+                              if c.get("type") == "MenuItemControl"]
+                    new_items = [n for n in cur_mi if n and n not in prev_mi]
+                    if new_items:
+                        g.add_menu(sid, engine._ui_pending_menu, new_items)
+                    engine._ui_pending_menu = None
                 if sid:
                     engine._ui_last_sid = sid
                 engine._ui_pending_action = None
@@ -581,6 +617,10 @@ async def handle_call(name: str, arguments: dict) -> list[TextContent]:
         elif name == "rpa_goto":
             r = engine.goto(arguments["target"], click=bool(arguments.get("click")))
             return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
+
+        elif name == "rpa_screen_map":
+            m = engine.screen_map(arguments.get("window"))
+            return [TextContent(type="text", text=json.dumps(m, ensure_ascii=False, indent=2))]
 
         elif name == "rpa_click_describe":
             # Desativado: o VLM derruba o server (OOM / >60s). Redireciona, rápido.

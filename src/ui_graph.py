@@ -87,9 +87,48 @@ class UiGraph:
             if len(self.states) >= self.max_states:
                 self._evict_one()
             self.states[sid] = {"id": sid, "label": label or "", "created": now,
-                                "seen": now, "count": 1, "controls": ctrls}
+                                "seen": now, "count": 1, "controls": ctrls, "menus": {}}
+        self.states[sid].setdefault("menus", {})
         self._dirty = True
         return sid
+
+    def add_menu(self, sid: str, menu_name: str, items):
+        """Object-repository: guarda a 'visão geral' de um MENU descoberto (itens
+        capturados por OCR quando o menu abre — menus são custom-desenhados, fora
+        da árvore UIA). Acumula/dedupa entre observações. Assim a tela 'conhece'
+        seu menu sem precisar reabrir."""
+        st = self.states.get(sid)
+        if not st or not menu_name:
+            return
+        cur = st.setdefault("menus", {}).get(menu_name, [])
+        seen = {i.lower() for i in cur}
+        for it in items:
+            it = (it or "").strip()
+            if it and it.lower() not in seen and len(it) <= 50:
+                cur.append(it)
+                seen.add(it.lower())
+        st["menus"][menu_name] = cur[:40]   # teto por menu
+        self._dirty = True
+
+    def screen_map(self, label_or_sid: str) -> dict:
+        """Mapa cacheado da tela (object-repository): controles + menus conhecidos
+        + transições conhecidas. É o 'algo para ajudar' o agente — sem re-explorar."""
+        sid = label_or_sid
+        if sid not in self.states:
+            sid = _signature(label_or_sid, [])  # tenta por título normalizado
+        st = self.states.get(sid)
+        if not st:
+            return {}
+        by_type = {}
+        for c in st["controls"]:
+            by_type.setdefault(c["type"].replace("Control", ""), []).append(c["name"])
+        return {
+            "label": st["label"],
+            "controls_by_type": {k: v[:30] for k, v in by_type.items()},
+            "menus": st.get("menus", {}),
+            "transitions": [{"action": e["action"], "to_label": self.states.get(e["to"], {}).get("label", "")}
+                            for e in self.edges.get(sid, {}).values()],
+        }
 
     def record_transition(self, from_sid: str, action: dict, to_sid: str):
         """Grava aresta (from, ação) -> to. action = {kind, target}."""

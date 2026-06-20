@@ -99,6 +99,7 @@ class RpaEngine:
         self._ui_graph_loaded = False
         self._ui_last_sid = None          # último estado observado
         self._ui_pending_action = None    # ação aguardando o próximo perceive p/ virar aresta
+        self._ui_pending_menu = None      # menu recém-aberto (Expand) p/ capturar itens por OCR
 
     def _ui_graph_get(self):
         """Carrega o grafo de UI sob demanda (best-effort; None se indisponível)."""
@@ -111,6 +112,18 @@ class RpaEngine:
                 self._log(f"ui_graph indisponível: {e}")
                 self._ui_graph = None
         return self._ui_graph
+
+    def screen_map(self, window: str = None) -> dict:
+        """Object-repository: o mapa CACHEADO da tela (controles + menus conhecidos
+        + transições), do grafo — sem re-explorar. `window` = título; default = palco."""
+        g = self._ui_graph_get()
+        if g is None:
+            return {"error": "grafo de UI indisponível"}
+        label = window or self._stage_title()
+        if not label:
+            return {"error": "sem janela-alvo (mire uma janela ou passe window=)"}
+        m = g.screen_map(label)
+        return m or {"label": label, "note": "tela ainda não mapeada — navegue que o grafo aprende"}
 
     def _ui_observe_current(self):
         """Observa o estado atual no grafo (dump UIA do palco) e devolve o sid."""
@@ -494,6 +507,8 @@ class RpaEngine:
                     method = None
                     if cp.get("can_expand") and onscreen:
                         self.desktop.mouse_click(cp["x"], cp["y"]); method = "click_rect"
+                        # menu/combo abriu → próximo perceive captura os itens (OCR)
+                        self._ui_pending_menu = cp["name"]
                     elif cp.get("can_invoke"):
                         try:
                             cp["_ctrl"].GetInvokePattern().Invoke(); method = "invoke"
