@@ -469,6 +469,19 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
         "hint": "Texto visível na tela com pontos de clique. Use rpa_click_text(<texto>) "
                 "ou rpa_click_at(x,y). Se vazio, chame rpa_target_window primeiro.",
     }
+    # Popup/modal bloqueando o palco? (ex.: diálogo de confirmação surgiu após o
+    # target). A janela-palco fica DESABILITADA — interagir nela não tem efeito.
+    # Avisa o agente p/ mirar o popup, em vez de ele ficar batendo na janela morta.
+    try:
+        if engine.stage_window is not None:
+            popup = getattr(engine.desktop, "blocking_popup", lambda w: None)(engine.stage_window)
+            if popup is not None:
+                meta["popup_bloqueando"] = popup["name"]
+                meta["hint"] = (f"ATENÇÃO: a janela-palco está BLOQUEADA por um popup modal "
+                                f"'{popup['name']}'. Cliques/teclas na tela atual NÃO terão efeito. "
+                                f"Chame rpa_target_window('{popup['name'][:30]}') e interaja com o popup.")
+    except Exception:
+        pass
     if extra:
         meta.update(extra)
     content = [TextContent(type="text", text=json.dumps(meta, ensure_ascii=False))]

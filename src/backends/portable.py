@@ -246,6 +246,82 @@ class PortableBackend:
             return None
         return sorted(matches, key=lambda w: -w["width"] * w["height"])[0]
 
+    def blocking_popup(self, win):
+        """Se um MODAL (popup) está bloqueando `win`, devolve a janela do popup
+        (mesmo formato de list_windows); senão None.
+
+        Sinal do Windows: ao abrir um diálogo modal, o SO DESABILITA a janela-dona
+        (IsWindowEnabled==False) e `GW_ENABLEDPOPUP` aponta o popup ativo. Sem isso
+        as tools tentam clicar/digitar na janela de baixo (bloqueada) e nada
+        acontece — é o que trava o agente. Segue a cadeia (popup de popup)."""
+        if sys.platform != "win32":
+            return None
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            GW_ENABLEDPOPUP = 6
+            w = win["_win"] if isinstance(win, dict) else win
+            hwnd = getattr(w, "_hWnd", None)
+            if not hwnd:
+                return None
+            hwnd = int(hwnd)
+            seen = set()
+            # desce a cadeia de popups até chegar no que está habilitado (o ativo)
+            for _ in range(8):
+                if u.IsWindowEnabled(hwnd):
+                    break
+                pop = u.GetWindow(hwnd, GW_ENABLEDPOPUP)
+                if not pop or pop == hwnd or pop in seen:
+                    break
+                seen.add(pop)
+                hwnd = int(pop)
+            target = win["_win"] if isinstance(win, dict) else win
+            target_hwnd = int(getattr(target, "_hWnd", 0))
+            if hwnd == target_hwnd:
+                # IsWindowEnabled não pegou (diálogo que NÃO desabilita a dona,
+                # ex.: janela de ordem do MT5). Fallback: janela VISÍVEL, com
+                # título, cujo DONO (GW_OWNER) é o alvo e que sobrepõe a área dele.
+                GW_OWNER = 4
+                tr = self.window_geometry(target)
+                best = None
+                for cw in (self._gw.getAllWindows() if self._gw else []):
+                    h = getattr(cw, "_hWnd", None)
+                    if not h or int(h) == target_hwnd:
+                        continue
+                    try:
+                        if not (cw.title and u.IsWindowVisible(int(h))):
+                            continue
+                        if u.GetWindow(int(h), GW_OWNER) != target_hwnd:
+                            continue
+                        # sobrepõe o alvo?
+                        ox, oy = int(cw.left) - self._vleft, int(cw.top) - self._vtop
+                        if (ox < tr["x"] + tr["width"] and ox + int(cw.width) > tr["x"] and
+                                oy < tr["y"] + tr["height"] and oy + int(cw.height) > tr["y"]):
+                            best = {"id": int(h), "name": cw.title, "x": ox, "y": oy,
+                                    "width": int(cw.width), "height": int(cw.height), "_win": cw}
+                            break
+                    except Exception:
+                        continue
+                return best
+            # acha o dict da janela do popup (já enumerada)
+            for cand in self.list_windows():
+                if cand["id"] == hwnd:
+                    return cand
+            # popup não enumerado (sem título/pequeno): monta pelo hwnd
+            from ctypes import wintypes as _wt
+            buf = ctypes.create_unicode_buffer(256); u.GetWindowTextW(hwnd, buf, 256)
+            rect = _wt.RECT(); u.GetWindowRect(hwnd, ctypes.byref(rect))
+            for cw in self._gw.getAllWindows() if self._gw else []:
+                if getattr(cw, "_hWnd", None) == hwnd:
+                    return {"id": hwnd, "name": buf.value or "(popup)",
+                            "x": int(rect.left) - self._vleft, "y": int(rect.top) - self._vtop,
+                            "width": int(rect.right - rect.left),
+                            "height": int(rect.bottom - rect.top), "_win": cw}
+            return None
+        except Exception as e:
+            print(f"[rpa] blocking_popup falhou: {e}", file=sys.stderr)
+            return None
+
     def activate_window(self, win):
         w = win["_win"] if isinstance(win, dict) else win
         self._focused_win = w

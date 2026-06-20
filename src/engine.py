@@ -107,14 +107,30 @@ class RpaEngine:
             return ActionResult(success=False, action=f"target_window:{title}",
                                 error=f"Janela '{title}' não encontrada",
                                 details={"windows": names})
+        # Popup/modal bloqueando? A janela-alvo fica DESABILITADA enquanto um
+        # diálogo modal está aberto — clicar/digitar nela não tem efeito. Mira o
+        # POPUP automaticamente (é com ele que dá pra interagir) e avisa.
+        redirected = None
+        try:
+            popup = getattr(self.desktop, "blocking_popup", lambda w: None)(win)
+        except Exception:
+            popup = None
+        if popup is not None:
+            redirected = {"de": win["name"], "para": popup["name"]}
+            self._log(f"'{win['name']}' está bloqueada pelo popup '{popup['name']}' — mirando o popup")
+            win = popup
         self.desktop.activate_window(win)
         time.sleep(settle)
         geo = self.desktop.window_geometry(win)
         self.stage_window = win
         self.stage_region = geo
         self._log(f"palco = '{win['name']}' @ {geo}")
-        return ActionResult(success=True, action=f"target_window:{title}",
-                            details={"window": win["name"], "region": geo})
+        details = {"window": win["name"], "region": geo}
+        if redirected:
+            details["redirected_to_popup"] = redirected
+            details["hint"] = (f"A janela '{redirected['de']}' estava bloqueada por um "
+                               f"popup modal; mirei o popup '{redirected['para']}'. Interaja com ele.")
+        return ActionResult(success=True, action=f"target_window:{title}", details=details)
 
     def clear_stage(self):
         """Drop the active stage; searches revert to the full screen."""
