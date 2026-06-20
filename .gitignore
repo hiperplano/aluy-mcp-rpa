@@ -3,3 +3,8 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# artefatos locais (não versionar)
+0.1
+test_mt5.py
+*.tmp
