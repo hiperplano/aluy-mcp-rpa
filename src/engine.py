@@ -113,6 +113,18 @@ class RpaEngine:
                 self._ui_graph = None
         return self._ui_graph
 
+    def learn_screen(self, analysis: str) -> dict:
+        """Aprendizado ATIVO: o agente analisou a tela atual a fundo e salva a
+        análise no grafo (object-repository). Próxima visita já vem 'conhecida'."""
+        g = self._ui_graph_get()
+        sid = self._ui_observe_current()
+        if g is None or sid is None:
+            return {"success": False, "error": "sem estado/grafo (mire uma janela primeiro)"}
+        g.set_analysis(sid, analysis)
+        g.save()
+        return {"success": True, "saved_for": (self._stage_title() or "")[:40],
+                "note": "análise salva — vou te devolver isto da próxima vez nesta tela"}
+
     def screen_map(self, window: str = None) -> dict:
         """Object-repository: o mapa CACHEADO da tela (controles + menus conhecidos
         + transições), do grafo — sem re-explorar. `window` = título; default = palco."""

@@ -442,6 +442,21 @@ TOOLS = [
         },
     ),
     Tool(
+        name="rpa_learn_screen",
+        description=(
+            "APRENDIZADO ATIVO: depois de analisar a fundo uma TELA NOVA (o que é, os "
+            "controles/affordances, comportamentos e fluxos possíveis), salve sua análise "
+            "aqui — fica no cache (object-repository) e te é devolvida na próxima visita "
+            "(`analise_da_tela`). Use quando o perceive marcar `tela_nova`."),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "analysis": {"type": "string", "description": "Sua análise da tela: propósito, controles principais, o que dá pra fazer, fluxos."},
+            },
+            "required": ["analysis"],
+        },
+    ),
+    Tool(
         name="rpa_screen_map",
         description=(
             "Devolve o MAPA CACHEADO da tela (object-repository aprendido): controles "
@@ -605,6 +620,30 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
                                 f"Chame rpa_target_window('{popup['name'][:30]}') e interaja com o popup.")
     except Exception:
         pass
+    # APRENDIZADO (object-repository): o que sei desta tela do cache + se é NOVA.
+    try:
+        g = engine._ui_graph_get()
+        sid = engine._ui_last_sid
+        if g is not None and sid:
+            analysis = g.states.get(sid, {}).get("analysis", "")
+            if analysis:
+                meta["analise_da_tela"] = analysis
+            elif ui_elements:
+                meta["tela_nova"] = True
+                meta["hint"] = (
+                    "TELA NOVA (ainda não analisada). APRENDA-A: olhe os ui_elements (peça image=true "
+                    "p/ ver o print), entenda o que é a tela e os comportamentos possíveis, e SALVE com "
+                    "rpa_learn_screen(analysis='...'). Se houver ÁRVORE/LISTA, um item pode estar ESCONDIDO "
+                    "(grupo colapsado → EXPANDA com rpa_click_text no grupo) ou NÃO-RENDERIZADO (lista "
+                    "virtualizada → ROLE com rpa_scroll) — revele tudo antes de concluir. " + meta["hint"])
+            rotas = g.transitions_from(sid)
+            if rotas:
+                meta["rotas_conhecidas"] = [f"{r['action'].get('target')} -> {r['to_label'][:28]}"
+                                            for r in rotas[:8]]
+                meta["hint"] = meta.get("hint", "") + (" Há rotas já aprendidas (rotas_conhecidas) — "
+                                                       "use rpa_goto('<alvo>') p/ ir direto sem re-explorar.")
+    except Exception:
+        pass
     if extra:
         meta.update(extra)
     content = [TextContent(type="text", text=json.dumps(meta, ensure_ascii=False))]
@@ -640,6 +679,10 @@ async def handle_call(name: str, arguments: dict) -> list[TextContent]:
         elif name == "rpa_screen_map":
             m = engine.screen_map(arguments.get("window"))
             return [TextContent(type="text", text=json.dumps(m, ensure_ascii=False, indent=2))]
+
+        elif name == "rpa_learn_screen":
+            r = engine.learn_screen(arguments["analysis"])
+            return [TextContent(type="text", text=json.dumps(r, ensure_ascii=False, indent=2))]
 
         elif name == "rpa_click_describe":
             # Desativado: o VLM derruba o server (OOM / >60s). Redireciona, rápido.
@@ -769,9 +812,11 @@ Motor de RPA de tela (mouse + teclado + OCR). SIGA este playbook para não quebr
    antes de qualquer coisa. Sem isso o OCR casa texto de outras janelas e o clique erra.
    Abra apps com `rpa_launch` (NUNCA pelo bash: um app gráfico de 1º plano trava o loop).
 
-2. PERCEBA POR TEXTO. `rpa_screenshot` / `rpa_describe_screen` retornam `visible_text`:
-   uma lista do que está na tela COM pontos de clique (ex.: "Sell @(1349,334)"). Leia essa
-   lista e aja por ela. NÃO peça imagem (image=true) nem use VLM/analyze — é lento e pode travar.
+2. PERCEBA: PREFIRA `ui_elements`. `rpa_screenshot` retorna `ui_elements` — os controles REAIS
+   da janela (acessibilidade UIA) com nome+tipo+ação+ponto EXATO (ex.: "Button 'Buy a mercado'
+   @(998,684) [invoke]"). Aja por eles (rpa_click_text('<nome>')). `visible_text` é OCR de
+   FALLBACK p/ texto custom-desenhado fora da árvore (gráficos, alguns menus). Peça image=true só
+   p/ analisar uma TELA NOVA (ver ponto 6).
 
 3. AÇÃO: PREFIRA CLIQUES. O mouse (`rpa_click_text`, `rpa_click_at`) funciona em QUALQUER app.
    O TECLADO (`rpa_type_text`, `rpa_press_key` — inclusive F9/Enter/atalhos) pode NÃO ter efeito
@@ -788,6 +833,18 @@ Motor de RPA de tela (mouse + teclado + OCR). SIGA este playbook para não quebr
 
 5. VERIFIQUE. Confirme o efeito lendo a tela de novo (`rpa_screenshot`) antes de declarar sucesso —
    a verificação visual interna é só uma dica (`stage_changed`), não prova que a ação surtiu efeito.
+
+6. APRENDA E REUSE (a ferramenta tem MEMÓRIA por tela — use!). O motor monta um grafo da app
+   conforme você navega. No `rpa_screenshot`:
+   - `rotas_conhecidas`: ações já aprendidas que levam a outra tela. Em vez de re-explorar, use
+     `rpa_goto('<alvo>')` p/ ir DIRETO ao controle (ele executa a rota cacheada). `rpa_screen_map`
+     mostra tudo que sei de uma tela (controles, menus, rotas, análise) ANTES de agir.
+   - `tela_nova: true`: tela ainda não analisada. APRENDA-A — peça image=true, entenda o que é e os
+     comportamentos possíveis, e SALVE com `rpa_learn_screen(analysis='...')`. Da próxima vez ela
+     volta em `analise_da_tela` (não re-analise).
+   - CONTEÚDO ESCONDIDO: um item pode não aparecer porque o grupo está COLAPSADO (clique no grupo
+     p/ EXPANDIR) ou a lista é VIRTUALIZADA (só renderiza o visível → `rpa_scroll` p/ revelar o
+     resto). Antes de concluir que algo "não existe", expanda os grupos e role a lista/árvore.
 """
 
 

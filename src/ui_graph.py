@@ -87,10 +87,25 @@ class UiGraph:
             if len(self.states) >= self.max_states:
                 self._evict_one()
             self.states[sid] = {"id": sid, "label": label or "", "created": now,
-                                "seen": now, "count": 1, "controls": ctrls, "menus": {}}
+                                "seen": now, "count": 1, "controls": ctrls,
+                                "menus": {}, "analysis": ""}
         self.states[sid].setdefault("menus", {})
+        self.states[sid].setdefault("analysis", "")
         self._dirty = True
         return sid
+
+    def set_analysis(self, sid: str, text: str):
+        """Aprendizado ATIVO: guarda a ANÁLISE PROFUNDA da tela feita pelo agente
+        (o que é a tela, affordances, comportamentos possíveis) — o object-
+        repository fica rico, não só a lista de controles. Persiste no cache."""
+        st = self.states.get(sid)
+        if st and text:
+            st["analysis"] = text.strip()[:1500]
+            self._dirty = True
+
+    def is_analyzed(self, sid: str) -> bool:
+        st = self.states.get(sid)
+        return bool(st and st.get("analysis"))
 
     def add_menu(self, sid: str, menu_name: str, items):
         """Object-repository: guarda a 'visão geral' de um MENU descoberto (itens
@@ -124,6 +139,7 @@ class UiGraph:
             by_type.setdefault(c["type"].replace("Control", ""), []).append(c["name"])
         return {
             "label": st["label"],
+            "analysis": st.get("analysis", ""),
             "controls_by_type": {k: v[:30] for k, v in by_type.items()},
             "menus": st.get("menus", {}),
             "transitions": [{"action": e["action"], "to_label": self.states.get(e["to"], {}).get("label", "")}
