@@ -577,7 +577,13 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
     # custom-desenhada, ex.: gráfico do MT5) ou full=True. Em janela UIA-rica
     # (diálogos/apps padrão) PULA o OCR → perceive bem mais rápido. O screenshot
     # ainda é tirado se pediram image=true.
-    do_ocr = full or (len(ui_elements) < 5)
+    # ROBUSTEZ DE BOOT: NUNCA carrega o OCR (modelo torch/GPU, ~15-20s frio) de
+    # forma síncrona numa tool — isso estourava o timeout de 60s do MCP na 1ª
+    # chamada e MATAVA o server (o canal não reconecta). Se o OCR ainda não
+    # aqueceu (warm-up em background), pula e devolve só a UIA + aviso.
+    ocr_ready = bool(getattr(engine.vision, "_ocr_loaded", False)
+                     and getattr(engine.vision, "_ocr_reader", None) is not None)
+    do_ocr = (full or (len(ui_elements) < 5)) and ocr_ready
     need_shot = do_ocr or with_image
     tokens, img, path = [], None, None
     if need_shot:
@@ -600,7 +606,11 @@ def _perceive(engine, *, full: bool = False, with_image: bool = False, extra: di
     if img is not None:
         meta["size"] = list(img.size)
     if not do_ocr:
-        meta["ocr"] = "pulado (UIA suficiente) — use ui_elements; peça full=true se precisar do texto OCR."
+        if not ocr_ready and (full or len(ui_elements) < 5):
+            meta["ocr"] = ("AQUECENDO (modelo OCR carregando em background) — use ui_elements por "
+                           "enquanto; o texto OCR (visible_text) fica disponível em alguns segundos.")
+        else:
+            meta["ocr"] = "pulado (UIA suficiente) — use ui_elements; peça full=true se precisar do texto OCR."
     if ui_elements:
         meta["ui_elements"] = ui_elements
         meta["hint"] = ("PREFIRA `ui_elements`: são os controles reais (acessibilidade UIA) "
