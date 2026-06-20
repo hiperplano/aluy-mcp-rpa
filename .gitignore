@@ -8,3 +8,6 @@ venv/
 0.1
 test_mt5.py
 *.tmp
+
+# evidência de validação (binários — mantida local, fora do git)
+scripts/evidencia/

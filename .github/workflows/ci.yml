@@ -1,0 +1,42 @@
+name: CI
+
+# CI HONESTA: a automação de desktop (clicar/digitar/OCR) exige uma tela real e
+# os backends nativos (Xlib, pyautogui, uiautomation), então NÃO roda headless.
+# Este pipeline afirma só o que é de fato verificável no runner:
+#   - lint de ERROS reais (ruff: pyflakes + syntax), sem ruído de estilo;
+#   - sintaxe de todo o código (py_compile);
+#   - smoke test dos módulos PUROS (stdlib): grafo de UI, degradação do UIA fora
+#     do Windows, e detecção de capacidades.
+# O que precisa de display fica como validação manual (scripts/validate_*.py).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static:
+    name: Lint + sintaxe + smoke
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dev tools
+        run: python -m pip install --upgrade pip ruff pytest
+
+      - name: Ruff (só erros reais — sem estilo)
+        run: ruff check --select E9,F63,F7,F82 src scripts
+
+      - name: Sintaxe (py_compile de tudo)
+        run: python -m py_compile $(git ls-files '*.py')
+
+      - name: Smoke test (módulos puros, sem display)
+        run: pytest -q tests
