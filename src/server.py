@@ -487,6 +487,47 @@ TOOLS = [
             "required": ["title"],
         },
     ),
+    Tool(
+        name="rpa_inspect_containers",
+        description=(
+            "Mapeia as SUBJANELAS/PAINÉIS da janela-palco como ÁRVORE ANINHADA "
+            "(Pane/Group/List/Table/Tab/...), cada um com rect, `scrollable` e "
+            "`collapsed`. Use ANTES de buscar dentro de um painel: o nó "
+            "`scrollable:true` é onde rolar (rpa_enumerate); `collapsed:true` "
+            "precisa expandir (rpa_click_text no nó). Em apps sem árvore de "
+            "acessibilidade (canvas/custom-desenhado) cai num fallback de VISÃO "
+            "(painéis por bordas, aproximado) — `source` diz de onde veio."),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_area": {"type": "integer", "description": "Área mínima (px²) de um painel no fallback de visão. Default 8000."},
+                "with_ocr_labels": {"type": "boolean", "description": "Rotular painéis por OCR no fallback de visão. Default true."},
+            },
+        },
+    ),
+    Tool(
+        name="rpa_enumerate",
+        description=(
+            "REVELA o conteúdo ESCONDIDO de uma lista/tabela rolável ou "
+            "virtualizada, que o OCR normal só lê no que está VISÍVEL no momento. "
+            "Rola + relê por OCR + dedup + costura a ordem, e detecta "
+            "o FIM da lista. Com `find`, PARA ao achar o item, deixa-o rolado p/ "
+            "dentro e devolve o ponto de clique (click=true também clica). É a única "
+            "forma de afirmar com certeza que um item NÃO está na lista (só após "
+            "`exhausted:true`). PAGINADA: se voltar com `cursor`, chame de novo com "
+            "ele p/ continuar (lista longa que não coube no orçamento de 60s)."),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "container": {"type": "string", "description": "Nome do painel a varrer (UIA). Omitido = o maior rolável / o palco."},
+                "find": {"type": "string", "description": "Texto a procurar. Se setado, para assim que casar (busca barata)."},
+                "click": {"type": "boolean", "description": "Clicar no item achado. Default false."},
+                "max_pages": {"type": "integer", "description": "Teto de páginas roladas por chamada (orçamento 60s). Default 6."},
+                "cursor": {"type": "string", "description": "Passe o `cursor` devolvido p/ RETOMAR de onde parou (não rola ao topo)."},
+                "anchor_col": {"type": "string", "description": "OPCIONAL (default desligado). 'auto' = dedup pela coluna mais à ESQUERDA (ex.: ticker/símbolo) e IGNORA colunas voláteis (preços/percentuais que mudam a cada tick e inflam a lista). Use em tabelas que atualizam ao vivo."},
+            },
+        },
+    ),
     # rpa_click_describe (VLM grounding) foi REMOVIDO do toolset: o VLM nesta
     # máquina estoura a memória / passa dos 60s do timeout MCP e DERRUBA o server
     # (reinício fail-soft). Use rpa_click_text / rpa_click_at + a perceção por texto.
@@ -775,6 +816,28 @@ async def handle_call(name: str, arguments: dict) -> list[TextContent]:
         elif name == "rpa_ask_screen":
             return _perceive(engine, extra={"question": arguments["question"]})
 
+        elif name == "rpa_inspect_containers":
+            from .inspect import inspect_containers
+            m = inspect_containers(
+                engine,
+                min_area=arguments.get("min_area", 8000),
+                with_ocr_labels=arguments.get("with_ocr_labels", True),
+            )
+            return [TextContent(type="text", text=json.dumps(m, ensure_ascii=False, indent=2))]
+
+        elif name == "rpa_enumerate":
+            from .inspect import enumerate_container
+            m = enumerate_container(
+                engine,
+                container=arguments.get("container"),
+                find=arguments.get("find"),
+                click=bool(arguments.get("click")),
+                max_pages=int(arguments.get("max_pages", 6)),
+                cursor=arguments.get("cursor"),
+                anchor_col=arguments.get("anchor_col"),
+            )
+            return [TextContent(type="text", text=json.dumps(m, ensure_ascii=False, indent=2))]
+
         elif name == "rpa_select_combobox":
             r = select_combobox(engine, arguments["label"], arguments["option"])
             return [TextContent(type="text", text=json.dumps(r.to_dict(), indent=2))]
@@ -853,8 +916,11 @@ Motor de RPA de tela (mouse + teclado + OCR). SIGA este playbook para não quebr
      comportamentos possíveis, e SALVE com `rpa_learn_screen(analysis='...')`. Da próxima vez ela
      volta em `analise_da_tela` (não re-analise).
    - CONTEÚDO ESCONDIDO: um item pode não aparecer porque o grupo está COLAPSADO (clique no grupo
-     p/ EXPANDIR) ou a lista é VIRTUALIZADA (só renderiza o visível → `rpa_scroll` p/ revelar o
-     resto). Antes de concluir que algo "não existe", expanda os grupos e role a lista/árvore.
+     p/ EXPANDIR) ou a lista/tabela é VIRTUALIZADA (só renderiza as linhas visíveis no momento).
+     Antes de concluir que algo "não existe", NÃO confie num único screenshot:
+     • `rpa_inspect_containers` mostra as subjanelas/painéis e quais são roláveis;
+     • `rpa_enumerate(container, find='<texto>')` ROLA e relê a lista toda — só afirme que um item
+       não existe quando ele voltar `exhausted:true`. Se voltar `cursor`, chame de novo com ele.
 """
 
 

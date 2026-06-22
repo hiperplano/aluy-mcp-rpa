@@ -747,21 +747,40 @@ class RpaEngine:
             except Exception as e:
                 self._log(f"scroll UIA falhou ({e}); fallback wheel")
 
+        # Verify REAL (P0/ANALISE-MELHORIAS): compara o palco ANTES x DEPOIS do
+        # scroll. Se nada mudou, o scroll não surtiu efeito (lista no fim, ou o
+        # wheel caiu na janela errada). É o MESMO sinal que o rpa_enumerate usa
+        # p/ detectar fim-de-lista — antes este diff era calculado e DESCARTADO.
+        region = self._region(None)
+        before = self._screenshot("scroll_before")
+
         def do():
             self.desktop.mouse_scroll(lines)
 
         def check():
-            # Take a second screenshot — if identical, scroll probably didn't work
-            after1 = self._screenshot("scroll_check")
-            time.sleep(0.2)
-            after2 = self._screenshot("scroll_check2")
-            diff = self._diff_safe(after1, after2)
-            # If screenshots at same scroll position are identical, scroll may have failed
-            # But true verification is hard without before/after comparison
-            return True  # Soft check
+            after = self._screenshot("scroll_after")
+            try:
+                moved = self.vision.region_changed(before, after, region=region)
+            except Exception:
+                moved = True  # fail-open
+            self._scroll_moved = moved
+            try:
+                os.unlink(after)
+            except Exception:
+                pass
+            # NÃO vira gate de retry: rolar no FIM da lista não é "falha" a re-tentar
+            # 3×. O veredito honesto vai em details["moved"]; quem enumera usa o
+            # mesmo region_changed p/ decidir parar.
+            return True
 
+        self._scroll_moved = True
         result = self.act(f"scroll_{lines}", do, check, verify_desc=f"scroll {lines} linhas")
+        try:
+            os.unlink(before)
+        except Exception:
+            pass
         result.details["lines"] = lines
+        result.details["moved"] = bool(getattr(self, "_scroll_moved", True))
         return result
 
     def drag(self, from_x: int, from_y: int, to_x: int, to_y: int) -> ActionResult:

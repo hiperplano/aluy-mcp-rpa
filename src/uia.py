@@ -285,6 +285,91 @@ def set_focused_value(value) -> bool:
     return False
 
 
+# Tipos que CONTÊM outros (subjanelas/painéis) — o esqueleto que o inspect mapeia.
+_CONTAINER_TYPES = {
+    "WindowControl", "PaneControl", "GroupControl", "DocumentControl",
+    "ListControl", "TableControl", "DataGridControl", "TreeControl",
+    "TabControl", "ToolBarControl", "HeaderControl", "ScrollBarControl",
+}
+
+
+def scrollable_rect(title, *, vleft=0, vtop=0):
+    """Rect {x,y,width,height} do melhor controle rolável da janela (o conteúdo
+    principal). É o alvo default do enumerate quando o chamador não nomeia um
+    container. None se não houver rolável (⇒ cai no palco inteiro)."""
+    c = _find_scrollable(title)
+    if c is None:
+        return None
+    r = _rect(c, vleft, vtop)
+    if not r:
+        return None
+    return {"x": r["x"], "y": r["y"], "width": r["width"], "height": r["height"]}
+
+
+def _collapsed(ctrl):
+    """True/False se o controle é expansível (ExpandCollapse) e está colapsado;
+    None se o padrão não se aplica."""
+    try:
+        ep = ctrl.GetExpandCollapsePattern()
+        if ep:
+            # ExpandCollapseState: 0=Collapsed, 1=Expanded, 2=PartiallyExpanded, 3=LeafNode
+            return int(ep.ExpandCollapseState) == 0
+    except Exception:
+        pass
+    return None
+
+
+def tree(title, *, maxd=8, limit=400, vleft=0, vtop=0):
+    """Árvore ANINHADA de containers (preserva containment — ≠ do dump plano).
+
+    Cada nó: {role, name, rect, scrollable, collapsed, child_count, children:[...]}.
+    Mantém nós-CONTAINER e nós COM NOME (controles-folha úteis); poda os vazios.
+    Orçamento global de nós (anti-runaway) sem achatar a hierarquia. Best-effort.
+    """
+    if not available():
+        return []
+    n = [0]
+
+    def node(c, depth):
+        if depth > maxd or n[0] >= limit:
+            return None
+        n[0] += 1
+        try:
+            ct = c.ControlTypeName or ""
+            nm = c.Name or ""
+            pats = _supported(c)
+            kids = c.GetChildren()
+            children = []
+            for ch in kids:
+                cn = node(ch, depth + 1)
+                if cn:
+                    children.append(cn)
+            is_container = ct in _CONTAINER_TYPES
+            if not (is_container or nm or children):
+                return None  # nó vazio sem ação nem filhos úteis → poda
+            return {
+                "role": ct.replace("Control", ""),
+                "name": nm,
+                "rect": _rect(c, vleft, vtop),
+                "scrollable": "scroll" in pats,
+                "collapsed": _collapsed(c),
+                "child_count": len(kids),
+                "children": children,
+            }
+        except Exception:
+            return None
+
+    out = []
+    try:
+        for w in _windows(title):
+            wn = node(w, 0)
+            if wn:
+                out.append(wn)
+    except Exception as e:
+        print(f"[rpa] uia.tree falhou: {e}", file=sys.stderr)
+    return out
+
+
 def dump(title, *, maxd=6, limit=120, vleft=0, vtop=0):
     """Lista os controles da janela (nome/tipo/patterns/rect) — serve de
     'perceber por acessibilidade': é o que o agente leria SEM OCR."""
