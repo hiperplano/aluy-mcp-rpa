@@ -423,9 +423,16 @@ class DesktopBackend:
         return out
 
     def find_window(self, title: str) -> Optional[dict]:
-        """Find the largest viewable window whose title contains `title`."""
+        """Find the viewable window matching `title`.
+
+        Prefer an EXACT title match (case-insensitive) over a mere substring —
+        senão, com janelas homônimas (ex.: dois "Mousepad"), o maior-que-contém
+        pegava a errada. Entre empates, a maior (área) vence.
+        """
         t = title.lower()
-        matches = [w for w in self.list_windows() if t in w["name"].lower()]
+        wins = self.list_windows()
+        exact = [w for w in wins if w["name"].lower() == t]
+        matches = exact or [w for w in wins if t in w["name"].lower()]
         if not matches:
             return None
         return sorted(matches, key=lambda w: -w["width"] * w["height"])[0]

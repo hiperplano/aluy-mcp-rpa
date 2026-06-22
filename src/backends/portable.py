@@ -112,8 +112,11 @@ class PortableBackend:
         return out
 
     def find_window(self, title):
+        # Título exato (case-insensitive) vence; senão o maior-que-contém (idem Linux).
         t = title.lower()
-        matches = [w for w in self.list_windows() if t in w["name"].lower()]
+        wins = self.list_windows()
+        exact = [w for w in wins if w["name"].lower() == t]
+        matches = exact or [w for w in wins if t in w["name"].lower()]
         if not matches:
             return None
         return sorted(matches, key=lambda w: -w["width"] * w["height"])[0]
