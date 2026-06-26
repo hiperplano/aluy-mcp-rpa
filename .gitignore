@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# artefatos locais (não versionar)
+0.1
+*.tmp
+
+dist/
+build/
+*.egg-info/

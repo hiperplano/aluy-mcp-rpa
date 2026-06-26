@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aluy-mcp-rpa"
+version = "0.1.0"
+description = "MCP server de automação visual de desktop (RPA) do aluy — vê a tela (OCR), clica e digita, com verificação visual e self-healing."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=1.0.0",
+  "Pillow>=10.0",
+  "opencv-python-headless>=4.8",
+  "numpy>=1.24",
+  "mss>=9.0",
+  "easyocr>=1.7",
+  "pyscreeze>=0.1",
+  # Backend de AÇÃO no Linux/X11 (XTest/XSendEvent/EWMH).
+  "python-Xlib>=0.33 ; sys_platform == 'linux'",
+  # Backend de AÇÃO PORTÁVEL no Windows/macOS (pygetwindow não suporta Linux).
+  "pyautogui>=0.9 ; sys_platform != 'linux'",
+  "pygetwindow>=0.0.9 ; sys_platform != 'linux'",
+  # Acessibilidade UIA (ação nativa exata sem OCR) — só Windows.
+  "uiautomation>=2.0 ; sys_platform == 'win32'",
+  "comtypes>=1.2 ; sys_platform == 'win32'",
+]
+
+# Console-script: é isto que o `uvx aluy-mcp-rpa` / `pipx run aluy-mcp-rpa` chamam, e o
+# que vai pro mcp.json como `command: "uvx", args: ["aluy-mcp-rpa"]`. Aponta pro wrapper
+# SÍNCRONO `run()` (o `main()` é async).
+[project.scripts]
+aluy-mcp-rpa = "aluy_mcp_rpa.server:run"
+
+# O código vive em `src/` (pacote com __init__.py + subpacotes backends/ e complex/). Os
+# imports internos são RELATIVOS (`from .engine import …`), então remapeamos `src/` para o
+# nome de distribuição `aluy_mcp_rpa` SEM renomear o diretório nem tocar em import nenhum.
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = "aluy_mcp_rpa"

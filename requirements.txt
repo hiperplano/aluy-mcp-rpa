@@ -1,0 +1,16 @@
+mcp>=1.0.0
+python-Xlib>=0.33      # ação no Linux/X11 (XTest/XSendEvent/EWMH)
+Pillow>=10.0
+opencv-python-headless>=4.8
+numpy>=1.24
+mss>=9.0               # screenshot — cross-OS (Linux/Windows/macOS)
+easyocr>=1.7
+pyscreeze>=0.1
+
+# Backend de ação PORTÁVEL (Windows/macOS) — instale SÓ no Win/Mac
+# (no Linux usa-se o backend Xlib; pygetwindow não suporta Linux):
+#   pip install pyautogui pygetwindow
+
+# Backend de ACESSIBILIDADE UIA (nível 1 do localizador) — SÓ Windows. Ação
+# nativa exata (Invoke/SetValue/Select) sem OCR. Opcional: ausente → cai no OCR.
+#   pip install uiautomation comtypes        # (Linux usa AT-SPI; macOS: futuro)
