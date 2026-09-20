@@ -1,171 +1,139 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/aluy-wordmark-white.png">
-    <img src="docs/aluy-wordmark.png" alt="Aluy" height="48">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hiperplano/aluy-mcp-rpa/main/docs/aluy-wordmark-white.png">
+    <img src="https://raw.githubusercontent.com/hiperplano/aluy-mcp-rpa/main/docs/aluy-wordmark.png" alt="Aluy" height="48">
   </picture>
 </p>
 
-# aluy-mcp-rpa
+<h1 align="center">aluy-mcp-rpa</h1>
 
-**MCP server de automação visual RPA.** Orquestra ferramentas de desktop e visão em rotinas determinísticas com verificação visual.
+<p align="center">
+  <b>Olhos e mãos para o seu agente no desktop.</b><br>
+  Um server MCP que lê a tela, clica e digita — e devolve o que vê como <b>texto</b>.
+</p>
 
-## Arquitetura
+<p align="center">
+  <a href="LICENSE"><img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-blue"></a>
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-server-8A2BE2">
+  <img alt="Linux · Windows · macOS" src="https://img.shields.io/badge/-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-informational">
+</p>
 
-```
-┌────────────────────────────────────────────┐
-│  Aluy Agent (LLM)                         │
-│  └─ mcp__rpa__rpa_click_text("OK")        │
-└──────────────┬─────────────────────────────┘
-               │ MCP stdio
-┌──────────────▼─────────────────────────────┐
-│  aluy-mcp-rpa (Python MCP server)         │
-│                                            │
-│  ┌──────────────────────────────────────┐  │
-│  │  RpaEngine (core loop)               │  │
-│  │                                       │  │
-│  │  1. before screenshot                 │  │
-│  │  2. do_action (desktop backend)       │  │
-│  │  3. after screenshot                  │  │
-│  │  4. verify (vision backend)           │  │
-│  │  5. retry on failure (max 3x)        │  │
-│  │  6. escalate to VLM on hard failure   │  │
-│  └──────────────────────────────────────┘  │
-│                                            │
-│  Backends:                                 │
-│  ├─ Desktop: Xlib + XTest (mouse) +       │
-│  │           XSendEvent (teclado) + mss    │
-│  ├─ Vision: OpenCV + EasyOCR (upscale)    │
-│  └─ Palco: target_window (escopo+foco)    │
-│                                            │
-│  Complex UI:                               │
-│  ├─ Combobox, Tabs, Menus                 │
-│  ├─ Tables, Forms                         │
-└────────────────────────────────────────────┘
-```
+---
 
-> **Estado:** mouse (XTest), teclado (XSendEvent — XTest-tecla é descartado em alguns
-> Xorg/xrdp), window-targeting, OCR com upscale, **self-healing** por template e perceção
-> via `rpa_screenshot` (retorna o TEXTO visível com pontos de clique; imagem opt-in). VLM
-> NÃO é usado por default (evita OOM em máquinas com pouca RAM).
-
-## Design
-
-- **Palco primeiro**: `rpa_target_window` mira a janela e escopa OCR/clique a ela (senão o OCR
-  casa texto de outras janelas no desktop compartilhado).
-- **Localização**: OCR (EasyOCR, recorte ampliado 4×) + Template Matching; `click_text` casa
-  exato antes de substring.
-- **Self-healing**: ao localizar por OCR, guarda um template visual; se o OCR falhar depois,
-  re-localiza por template-match.
-- **Perceber**: `rpa_screenshot` devolve o **TEXTO visível** com pontos de clique (ex.: `Salvar @(1349,334)`) — porque o modelo do agente é texto, não visão. Imagem opt-in via `image=true`.
-- **Verificação**: best-effort (diff de região é informativo, não bloqueia — o diff before/after
-  é instável neste servidor; a asserção real é o agente olhando o screenshot).
-
-## Ferramentas (MCP tools)
-
-| Tool | Descrição |
-|------|-----------|
-| `rpa_target_window` | **Mira a janela-alvo (palco)**: eleva+foca e escopa buscas/cliques a ela |
-| `rpa_screenshot` | Lê a tela — **retorna o TEXTO visível** + pontos de clique (recortado no palco); imagem opt-in (`image=true`) |
-| `rpa_click_at` | Clique em (x,y) |
-| `rpa_click_text` | Encontra texto via OCR (upscale) e clica — com **self-healing** por template |
-| `rpa_click_image` | Template matching + clique |
-| `rpa_click_describe` | Grounding por descrição via VLM (quando houver RAM) |
-| `rpa_type_text` | Digita texto (XSendEvent) |
-| `rpa_press_key` | Tecla/combo (ctrl+c, alt+F4, etc) |
-| `rpa_scroll` | Scroll vertical |
-| `rpa_drag` | Arrasta mouse |
-| `rpa_wait_for_image` | Polling até template aparecer |
-| `rpa_wait_for_text` | Polling OCR até texto aparecer |
-| `rpa_describe_screen` | Retorna o TEXTO visível da tela p/ o agente descrever |
-| `rpa_ask_screen` | Retorna o TEXTO visível p/ o agente responder a pergunta |
-| `rpa_select_combobox` | Seleciona opção de dropdown |
-| `rpa_click_tab` | Clica em tab |
-| `rpa_navigate_menu` | Navega menu hierárquico |
-| `rpa_fill_form` | Preenche formulário completo |
-| `rpa_find_in_table` | Encontra célula em tabela |
-
-## Instalação
+Automação de desktop para quando **não existe API**: o sistema legado, o terminal
+gráfico, o app que só tem interface. O agente enxerga a janela, encontra o botão
+pelo texto, clica e confere o resultado.
 
 ```bash
+# registra no aluy (ou em qualquer cliente MCP)
+aluy mcp add rpa -- uvx --from git+https://github.com/hiperplano/aluy-mcp-rpa aluy-mcp-rpa
+```
+
+Depois, dentro da sessão, é só pedir — *"abra a calculadora, digite 12 × 7 e me diga
+o resultado"* — e o agente conduz:
+
+```
+rpa_launch("xcalc")            → pid 48213, janela nova
+rpa_target_window("xcalc")     → palco: xcalc @ 1280x1024
+rpa_screenshot()               → "7 @(412,377) · × @(455,377) · = @(498,420) …"
+rpa_click_text("7") …          → ok (verificado)
+rpa_screenshot()               → "84 @(430,210)"
+```
+
+## A ideia central
+
+**Percepção volta como TEXTO, não como imagem.** O `rpa_screenshot` devolve o que
+está escrito na tela junto com as coordenadas de clique (`Salvar @(1349,334)`),
+porque o modelo do agente é de texto — mandar um PNG gasta contexto, exige um
+modelo com visão, e ainda deixa a decisão de "onde clicar" no lugar errado. A
+imagem existe, mas é opt-in (`image=true`).
+
+É isso que faz o server funcionar com **qualquer modelo**, inclusive os baratos e
+os locais, sem VLM.
+
+## O que ele tem de diferente
+
+**Palco antes de tudo.** `rpa_target_window` mira a janela e **escopa** OCR e cliques
+a ela. Sem isso, num desktop compartilhado, o OCR casa o texto da janela errada e o
+agente clica em outro app — o tipo de bug que só aparece em produção.
+
+**Localizar sobrevive a mudança.** O texto é achado por OCR (EasyOCR, com recorte
+ampliado 4×) e, ao localizar, o server **guarda um template visual**. Se o OCR falhar
+depois — fonte diferente, tema novo, antialias —, ele re-localiza por template
+matching. É *self-healing*, não uma coordenada fixa que quebra na próxima versão do
+app.
+
+**O agente aprende a interface e para de re-explorar.** Há um repositório de objetos
+por trás: `rpa_learn_screen` guarda a análise que o agente fez de uma tela nova;
+`rpa_screen_map` devolve depois o que já se sabe dela — controles, menus já abertos,
+e que ação leva a que tela; e `rpa_goto("Buy a mercado")` **percorre sozinho a rota
+já aprendida** até o controle-alvo, sem redescobrir o caminho. Na segunda visita a
+automação fica rápida e determinística.
+
+**Abrir app sem travar o loop.** `rpa_launch` sobe o programa destacado e retorna na
+hora com o pid e as janelas novas. Um app gráfico chamado pelo bash não retorna e
+prende o agente — é o erro que todo mundo comete uma vez.
+
+## ⚠️ Antes de instalar
+
+Este server **controla o seu mouse e o seu teclado**. Ele digita em janelas reais,
+clica em botões reais, e não distingue o seu editor de texto do seu internet
+banking. Um agente com acesso a ele pode fazer no seu desktop o que você faria.
+
+- Prefira um **display dedicado** (`Xvfb`) ou uma VM quando a tarefa não exigir a
+  sua sessão real.
+- No cliente MCP, mantenha as tools `mcp__rpa__*` **atrás da catraca de permissão**.
+  Um server MCP roda com os **seus** privilégios, sem sandbox.
+- Não deixe credencial visível durante uma automação: o OCR lê o que estiver na
+  tela, e esse texto vai para o contexto do modelo.
+
+## Requisitos
+
+- **Python ≥ 3.10**
+- **Linux:** um servidor X (`DISPLAY`) — o `:0`, um do xrdp, ou um `Xvfb` dedicado
+- **Memória:** EasyOCR/torch pesam 1–2 GB. Garanta **swap** — sem ele o OOM mata a
+  sessão. O server **detecta e avisa** no boot, mas não conserta: é config de sistema
+- **Wine**, só para automatizar app Windows sobre Linux
+
+O log de boot imprime o que foi detectado: `[rpa] capacidades: os=… x_ok=… wine=…`.
+Passo a passo em [docs/instalacao.md](docs/instalacao.md).
+
+## Suporte por sistema
+
+O que muda entre os sistemas é só o **backend de ação**; visão, OCR, engine e a
+camada MCP são os mesmos.
+
+| Sistema | Backend de ação | Estado |
+| --- | --- | --- |
+| **Linux / X11** | Xlib + XTest/XSendEvent + EWMH | ✅ provado — é o caminho default |
+| **Windows / macOS** | pyautogui + pygetwindow + mss | ⚠️ implementado; **input validado**, mas o run completo com janelas ainda não foi exercitado numa máquina Win/Mac |
+
+Screenshot é via `mss` nos dois casos. Relato de uso em Windows e macOS é
+especialmente bem-vindo — é a lacuna conhecida do projeto.
+
+## Documentação
+
+| | |
+| --- | --- |
+| [Ferramentas](docs/ferramentas.md) | as 22 tools MCP, uma a uma |
+| [Instalação](docs/instalacao.md) | dependências de sistema, swap, Xvfb, Wine |
+
+## Contribuir
+
+```bash
+git clone https://github.com/hiperplano/aluy-mcp-rpa && cd aluy-mcp-rpa
 pip install -r requirements.txt
-```
-
-### Dependências do sistema
-
-```bash
-# Ação no X é via python3-Xlib + XTest + mss (sem xdotool/pyautogui).
-# Só precisa de um servidor X (ex.: o :0, ou um do xrdp, ou um Xvfb dedicado):
-sudo apt install xvfb openbox    # opcional: display dedicado p/ automação isolada
-# Xvfb :20 -screen 0 1280x1024x24 -nolisten tcp & ; DISPLAY=:20 openbox &
-
-# EasyOCR (OCR primário, ~500MB no primeiro uso) — instalado via pip (requirements.txt)
-```
-
-### Memória / swap (IMPORTANTE — config de SISTEMA, não do server)
-
-EasyOCR/torch (~1-2GB) e, se usados, VLMs pesados podem **estourar a RAM e matar a sessão**
-(OOM) em máquinas apertadas. O server **não gerencia swap** (é root/sistema) — ele só **avisa**
-no startup se a memória estiver baixa. Garanta swap (sobrevive a reboot):
-
-```bash
-sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab   # persiste no reboot
-```
-
-### Pré-requisitos de SO que o server DETECTA e AVISA no startup
-
-O motor de detecção (`capabilities`) sonda e loga no boot — **não conserta** (são de sistema):
-
-| Pré-requisito | Sem ele | Como prover |
-|---|---|---|
-| **Servidor X** (`DISPLAY`) | ERRO — o motor não opera | `:0`, ou `Xvfb :20 -screen 0 1280x1024x24` |
-| **Swap** (memória) | OOM mata a sessão | ver bloco acima |
-| **Wine** | apps **Windows** (via Wine) não abrem; nativos ok | `sudo apt install wine wine64` |
-
-O log de boot mostra tudo: `[rpa] capacidades: os=… ... x_ok=… wine=… …`.
-
-### Sistema operacional (Linux · Windows · macOS)
-
-A detecção escolhe o **backend de ação** pelo OS — o resto (visão/OCR/a11y/engine/MCP) é o mesmo:
-
-| OS | Backend de ação | Estado |
-|---|---|---|
-| **Linux/X11** | Xlib + XTest/XSendEvent + EWMH (`DesktopBackend`) | ✅ provado (default) |
-| **Windows / macOS** | pyautogui + pygetwindow + mss (`PortableBackend`) | ⚠️ implementado; **input validado** (pyautogui em Xvfb), **janelas (pygetwindow) e run completo pendentes de máquina Win/Mac** |
-
-Screenshot é via **mss** (cross-OS) nos dois. No Win/Mac, `pip install pyautogui pygetwindow` e rode normalmente — o motor detecta o OS e usa o backend portável.
-
-## Registro como MCP server
-
-```bash
-# via uvx (recomendado — busca e roda o pacote, sem instalar/venv):
-aluy mcp add rpa -- uvx aluy-mcp-rpa
-# (ou, a partir de um clone local: `aluy mcp add rpa -- uvx --from . aluy-mcp-rpa`)
-```
-
-Já registrado no `.mcp.json` do projeto (`aluy mcp list` mostra `rpa`). Reinicie a sessão Aluy;
-dentro dela, `/mcp` faz o handshake e as tools `mcp__rpa__*` aparecem (atrás da catraca).
-
-## Desenvolvimento / validação
-
-```bash
-export DISPLAY=:0        # ou :20 (Xvfb dedicado)
-python3 scripts/validate_engine.py        # target+type / click_text / misto (A/B/C)
+export DISPLAY=:0                         # ou :20, num Xvfb dedicado
+python3 scripts/validate_engine.py        # target+type · click_text · misto
 python3 scripts/validate_mcp_dispatch.py  # camada MCP (handle_call)
 python3 scripts/validate_healing.py       # self-healing por template
 ```
 
-```bash
-# Sanidade do backend
-python3 -c "
-import os; os.environ['DISPLAY']=':0'
-from src.backends import detect_backends
-d, v, vlm = detect_backends()
-print('Desktop:', d, '| Vision:', bool(v), '| Screen:', d.screen_width, 'x', d.screen_height)
-"
-```
+Automação de tela falha de formas que só aparecem no display real — então a regra
+aqui é **medir, não deduzir**. Um relato de bug com o app, o tema e o que apareceu
+na tela vale mais do que qualquer leitura de código.
 
 ## Licença
 
-MIT — ver [`LICENSE`](LICENSE).
+[MIT](LICENSE) © Hiperplano
