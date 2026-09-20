@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🔒 Vulnerabilidade de segurança
+    url: https://github.com/hiperplano/aluy-mcp-rpa/security/advisories/new
+    about: NÃO abra issue pública. Use o canal privado — só os mantenedores veem.
+  - name: 📖 Instalação e ferramentas
+    url: https://github.com/hiperplano/aluy-mcp-rpa#documenta%C3%A7%C3%A3o
+    about: As 22 tools, dependências de sistema, Xvfb, swap e Wine.

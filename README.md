@@ -88,6 +88,10 @@ banking. Um agente com acesso a ele pode fazer no seu desktop o que você faria.
 - Não deixe credencial visível durante uma automação: o OCR lê o que estiver na
   tela, e esse texto vai para o contexto do modelo.
 
+O que conta como vulnerabilidade aqui — e o que não conta — está em
+[SECURITY.md](SECURITY.md). Falha de segurança **não** vai em issue pública:
+use o [canal privado](https://github.com/hiperplano/aluy-mcp-rpa/security/advisories/new).
+
 ## Requisitos
 
 - **Python ≥ 3.10**
@@ -120,6 +124,9 @@ especialmente bem-vindo — é a lacuna conhecida do projeto.
 | [Instalação](docs/instalacao.md) | dependências de sistema, swap, Xvfb, Wine |
 
 ## Contribuir
+
+PRs são bem-vindos — o [CONTRIBUTING.md](CONTRIBUTING.md) tem o essencial, e o
+[código de conduta](CODE_OF_CONDUCT.md) vale para todo mundo.
 
 ```bash
 git clone https://github.com/hiperplano/aluy-mcp-rpa && cd aluy-mcp-rpa

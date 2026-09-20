@@ -1,0 +1,75 @@
+name: 🐛 Bug
+description: Uma tool não faz o que deveria, ou o server não sobe
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Automação de tela depende do ambiente inteiro — sistema, servidor gráfico,
+        tema, fonte e o app automatizado. **Sem isso não dá para reproduzir**, e
+        sem reproduzir não dá para consertar.
+
+        O log de boot (`[rpa] capacidades: …`) responde metade das perguntas.
+
+  - type: textarea
+    id: oque
+    attributes:
+      label: O que aconteceu
+      description: O que você esperava, e o que aconteceu na tela.
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: Qual tool
+      placeholder: "rpa_click_text"
+    validations:
+      required: true
+
+  - type: input
+    id: app
+    attributes:
+      label: App automatizado
+      description: E o toolkit, se souber. Apps Wine e toolkits antigos têm comportamento próprio.
+      placeholder: "mousepad (GTK) · ou: MetaTrader 5 sob Wine"
+    validations:
+      required: true
+
+  - type: input
+    id: ambiente
+    attributes:
+      label: Sistema e servidor gráfico
+      placeholder: "Ubuntu 24.04 · X11 :0 · Python 3.12"
+    validations:
+      required: true
+
+  - type: textarea
+    id: capacidades
+    attributes:
+      label: Log de capacidades do boot
+      description: "A linha `[rpa] capacidades: os=… x_ok=… wine=…`."
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Como reproduzir
+      placeholder: |
+        1. rpa_launch("mousepad")
+        2. rpa_target_window("mousepad")
+        3. rpa_click_text("Salvar") → acontece X
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirma
+    attributes:
+      label: Confirmações
+      options:
+        - label: Chamei `rpa_target_window` antes de interagir (sem palco, o OCR casa outra janela)
+          required: true
+        - label: Não há credencial nem dado privado no que eu colei — inclusive em screenshot
+          required: true
