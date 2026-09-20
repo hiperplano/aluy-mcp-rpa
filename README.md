@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/aluy-wordmark-white.png">
-    <img src="docs/aluy-wordmark.png" alt="Aluy" height="48">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hiperplano/aluy-mcp-rpa/main/docs/aluy-wordmark-white.png">
+    <img src="https://raw.githubusercontent.com/hiperplano/aluy-mcp-rpa/main/docs/aluy-wordmark.png" alt="Aluy" height="48">
   </picture>
 </p>
 
@@ -86,8 +86,21 @@
 
 ## Instalação
 
+Requer **Python ≥ 3.10** e um servidor X (Linux) — ver *Dependências do sistema*.
+
+O jeito normal é **não instalar**: o `uvx` busca e roda o pacote sob demanda.
+
 ```bash
-pip install -r requirements.txt
+uvx --from git+https://github.com/hiperplano/aluy-mcp-rpa aluy-mcp-rpa
+```
+
+> **Por que `--from git+…` e não `uvx aluy-mcp-rpa`:** o pacote **ainda não está
+> publicado no PyPI**. Quando estiver, o `--from` sai e o comando vira só o nome.
+
+Para desenvolver, a partir de um clone:
+
+```bash
+pip install -r requirements.txt    # ou: uvx --from . aluy-mcp-rpa
 ```
 
 ### Dependências do sistema
@@ -140,12 +153,15 @@ Screenshot é via **mss** (cross-OS) nos dois. No Win/Mac, `pip install pyautogu
 
 ```bash
 # via uvx (recomendado — busca e roda o pacote, sem instalar/venv):
-aluy mcp add rpa -- uvx aluy-mcp-rpa
-# (ou, a partir de um clone local: `aluy mcp add rpa -- uvx --from . aluy-mcp-rpa`)
+aluy mcp add rpa -- uvx --from git+https://github.com/hiperplano/aluy-mcp-rpa aluy-mcp-rpa
+# (a partir de um clone local: `aluy mcp add rpa -- uvx --from . aluy-mcp-rpa`)
 ```
 
-Já registrado no `.mcp.json` do projeto (`aluy mcp list` mostra `rpa`). Reinicie a sessão Aluy;
-dentro dela, `/mcp` faz o handshake e as tools `mcp__rpa__*` aparecem (atrás da catraca).
+O `aluy onboard` também oferece o RPA na lista de servers MCP, já com esse comando.
+
+Depois de registrar, `aluy mcp list` mostra `rpa`. Reinicie a sessão Aluy; dentro dela,
+`/mcp` faz o handshake e as tools `mcp__rpa__*` aparecem — **atrás da catraca de
+permissão**, como toda tool. Um server MCP roda com os SEUS privilégios, sem sandbox.
 
 ## Desenvolvimento / validação
 
