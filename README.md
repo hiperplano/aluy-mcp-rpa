@@ -165,3 +165,7 @@ d, v, vlm = detect_backends()
 print('Desktop:', d, '| Vision:', bool(v), '| Screen:', d.screen_width, 'x', d.screen_height)
 "
 ```
+
+## Licença
+
+MIT — ver [`LICENSE`](LICENSE).
