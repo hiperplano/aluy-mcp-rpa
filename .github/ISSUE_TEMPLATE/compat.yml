@@ -1,0 +1,39 @@
+name: 🖥️ Relato de plataforma (Windows / macOS)
+description: Contar como foi rodar fora do Linux — a lacuna conhecida do projeto
+labels: ["plataforma"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        O backend portável (pyautogui + pygetwindow + mss) está implementado e com
+        o **input validado**, mas o run completo com janelas ainda não foi
+        exercitado numa máquina Windows ou macOS. Relato aqui vale muito — é o
+        que fecha essa lacuna.
+
+  - type: input
+    id: so
+    attributes:
+      label: Sistema
+      placeholder: "Windows 11 23H2 · ou: macOS 15.1 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: funcionou
+    attributes:
+      label: O que funcionou
+      description: Quais tools você conseguiu usar, e em que app.
+    validations:
+      required: true
+
+  - type: textarea
+    id: quebrou
+    attributes:
+      label: O que não funcionou
+      description: Com a mensagem de erro, se houve.
+
+  - type: textarea
+    id: capacidades
+    attributes:
+      label: Log de capacidades do boot
+      render: text
