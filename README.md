@@ -1,3 +1,5 @@
+![aluy-mcp-rpa — Hiperplano](.github/assets/banner.png)
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hiperplano/aluy-mcp-rpa/main/docs/aluy-wordmark-white.png">
